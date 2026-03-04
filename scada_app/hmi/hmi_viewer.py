@@ -408,6 +408,12 @@ class HMIButtonRuntime(HMIButton):
                     print(f"Button: No target variable set")
                     return
                 
+                # Get bit_offset from variable binding
+                bit_offset = None
+                if button_obj.variables:
+                    bound_var = button_obj.variables[0]
+                    bit_offset = getattr(bound_var, 'bit_offset', None)
+                
                 try:
                     current_value = data_manager.get_tag_value(var_name)
                     
@@ -422,13 +428,27 @@ class HMIButtonRuntime(HMIButton):
                     elif operation == '取反':
                         # For bit offset, toggle only the specific bit
                         if bit_offset is not None:
-                            # Read current value and toggle the specific bit
-                            current_int = int(current_value) if current_value is not None else 0
-                            current_bit = (current_int >> bit_offset) & 1
-                            new_bit = 1 - current_bit
-                            # We'll write just the bit value (0 or 1), and plc_manager will handle read-modify-write
-                            new_value = bool(new_bit)
-                            print(f"Button: Toggle bit {bit_offset} of {var_name} from {current_bit} to {new_bit}")
+                            # Read current raw value from data manager
+                            current_raw_value = data_manager.get_tag_value(var_name)
+                            print(f"Button: Read {var_name} = {current_raw_value}, bit_offset={bit_offset}")
+                            
+                            # If current value is boolean or we don't have a value, read from PLC
+                            if current_raw_value is None or isinstance(current_raw_value, bool):
+                                # Read latest value from PLC
+                                plc_value = data_manager.read_tag_value(var_name)
+                                if plc_value is not None:
+                                    current_raw_value = plc_value
+                                    print(f"Button: Read from PLC: {var_name} = {current_raw_value}")
+                            
+                            if current_raw_value is not None:
+                                current_int = int(current_raw_value)
+                                current_bit = (current_int >> int(bit_offset)) & 1
+                                new_bit = 1 - current_bit
+                                new_value = bool(new_bit)
+                                print(f"Button: Toggle bit {bit_offset} of {var_name} from {current_bit} to {new_bit} (register: {current_int} -> will update)")
+                            else:
+                                new_value = True
+                                print(f"Button: No value available, toggling to {new_value}")
                         else:
                             new_value = not bool(current_value) if current_value is not None else True
                         data_manager.update_tag(var_name, new_value)
@@ -753,6 +773,7 @@ class HMISwitchRuntime(HMISwitch):
         if self.variables and data_manager:
             rect_item.hmi_object = self
             rect_item.data_manager = data_manager
+            rect_item.hmi_scene = scene
             
             def mouse_press_handler(event):
                 switch_obj = rect_item.hmi_object
@@ -2642,6 +2663,7 @@ class HMICheckBoxRuntime(HMICheckBox):
         if self.variables and data_manager:
             box_item.hmi_object = self
             box_item.data_manager = data_manager
+            box_item.hmi_scene = scene
             
             def mouse_press_handler(event):
                 obj = box_item.hmi_object
@@ -2674,6 +2696,20 @@ class HMICheckBoxRuntime(HMICheckBox):
                         new_value = not current_value
                         dm.update_tag(var_name, new_value)
                         print(f"CheckBox: Toggled {var_name} bit {bit_offset} to {new_value}")
+                        
+                        # Write to PLC
+                        if hasattr(box_item, 'hmi_scene') and hasattr(box_item.hmi_scene, 'plc_manager'):
+                            plc_manager = box_item.hmi_scene.plc_manager
+                            if plc_manager:
+                                try:
+                                    if bit_offset is not None:
+                                        plc_manager.write_tag(var_name, new_value, bit_offset)
+                                        print(f"CheckBox: Wrote bit {bit_offset} = {new_value} to {var_name}")
+                                    else:
+                                        plc_manager.write_tag(var_name, new_value)
+                                        print(f"CheckBox: Wrote {var_name} = {new_value} to PLC")
+                                except Exception as e:
+                                    print(f"CheckBox: Error writing to PLC: {e}")
                     except Exception as e:
                         print(f"CheckBox: Error toggling {var_name}: {e}")
             
@@ -2866,8 +2902,24 @@ class HMIDropdownRuntime(HMIDropdown):
                     try:
                         bound_var = self.variables[0]
                         var_name = bound_var.variable_name
+                        bit_offset = getattr(bound_var, 'bit_offset', None)
+                        
                         data_manager.update_tag(var_name, new_value)
-                        print(f"Dropdown: Selected {var_name} = {new_value}")
+                        print(f"Dropdown: Selected {var_name} = {new_value}, bit_offset={bit_offset}")
+                        
+                        # Write to PLC with bit_offset if specified
+                        if hasattr(proxy, 'hmi_scene') and hasattr(proxy.hmi_scene, 'plc_manager'):
+                            plc_manager = proxy.hmi_scene.plc_manager
+                            if plc_manager:
+                                try:
+                                    if bit_offset is not None:
+                                        plc_manager.write_tag(var_name, new_value, bit_offset)
+                                        print(f"Dropdown: Wrote bit {bit_offset} = {new_value} to {var_name}")
+                                    else:
+                                        plc_manager.write_tag(var_name, new_value)
+                                        print(f"Dropdown: Wrote {var_name} = {new_value} to PLC")
+                                except Exception as e:
+                                    print(f"Dropdown: Error writing to PLC: {e}")
                     except Exception as e:
                         print(f"Dropdown: Error setting variable: {e}")
             
@@ -2877,6 +2929,7 @@ class HMIDropdownRuntime(HMIDropdown):
         proxy.hmi_object = self
         proxy.data_manager = data_manager
         proxy.parent_widget = parent_widget
+        proxy.hmi_scene = scene
 
 
 class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
