@@ -401,18 +401,16 @@ class HMIButtonRuntime(HMIButton):
                     print(f"Button: Too fast click, ignoring press")
                     return
             
-            # Handle variable operations - use target_variable from properties
+            # Handle variable operations - use variables[0] from variable binding
             if action_type == '变量操作' and data_manager:
-                var_name = button_obj.properties.get('target_variable', '')
-                if not var_name:
-                    print(f"Button: No target variable set")
+                if not button_obj.variables:
+                    print(f"Button: No variable bound")
                     return
                 
-                # Get bit_offset from variable binding
-                bit_offset = None
-                if button_obj.variables:
-                    bound_var = button_obj.variables[0]
-                    bit_offset = getattr(bound_var, 'bit_offset', None)
+                # Get variable name and bit_offset from variables[0]
+                bound_var = button_obj.variables[0]
+                var_name = bound_var.variable_name
+                bit_offset = getattr(bound_var, 'bit_offset', None)
                 
                 try:
                     current_value = data_manager.get_tag_value(var_name)

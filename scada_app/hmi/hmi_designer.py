@@ -349,7 +349,6 @@ class HMIButton(HMIObject):
             'text_v_align': 'middle',
             'action_type': 'custom',
             'variable_operation': '置位',
-            'target_variable': '',
             'set_value': 1,
             'reset_value': 0,
             'target_screen': '',
@@ -3215,13 +3214,6 @@ class HMIDesigner(QDialog):
         self.var_operation_combo.setFixedWidth(80)
         var_op_layout.addWidget(self.var_operation_combo)
         
-        self.var_label = QLabel("变量:")
-        var_op_layout.addWidget(self.var_label)
-        self.target_var_combo = SmartVariableComboBox(self, self.data_manager, self.config_manager)
-        self.target_var_combo.combo.setFixedWidth(90)
-        self.target_var_combo.variableSelected.connect(self.on_property_change)
-        var_op_layout.addWidget(self.target_var_combo)
-        
         # Screen navigation widgets (shown when "画面跳转" is selected)
         self.screen_nav_label = QLabel("画面:")
         var_op_layout.addWidget(self.screen_nav_label)
@@ -3259,9 +3251,8 @@ class HMIDesigner(QDialog):
         ]
         
         # Variable selection widgets (shown when variable operation is selected)
-        self.var_op_widgets = [
-            self.var_label, self.target_var_combo
-        ]
+        # Note: Variable binding is now handled by variables[0] in variable binding tab
+        self.var_op_widgets = []
         
         # === Group 7: Switch Text Settings ===
         self.switch_text_group = QGroupBox("开关文本")
@@ -5435,13 +5426,6 @@ class HMIDesigner(QDialog):
                     # Pass update_property=False to avoid modifying the object during panel update
                     self.on_action_type_change(action_text, update_property=False)
                     
-                    # Set target variable
-                    if hasattr(self, 'target_var_combo'):
-                        target_var = props.get('target_variable', '')
-                        self.target_var_combo.combo.blockSignals(True)
-                        self.target_var_combo.setText(target_var)
-                        self.target_var_combo.combo.blockSignals(False)
-                    
                     # Refresh and set target screen
                     if hasattr(self, 'target_screen_combo'):
                         self.refresh_target_screens()
@@ -6282,7 +6266,6 @@ class HMIDesigner(QDialog):
                     # Only update action properties for the primary selected object
                     # to avoid changing all selected buttons' navigation settings
                     if obj == self.selected_object:
-                        obj.properties['target_variable'] = self.target_var_combo.currentText()
                         obj.properties['target_screen'] = self.target_screen_combo.currentText()
                         obj.properties['target_screen_number'] = self.target_screen_number_spin.value()
                         
@@ -6399,39 +6382,27 @@ class HMIDesigner(QDialog):
         
         # Show/hide widgets based on action type
         if text == "画面跳转":
-            # Show screen navigation, hide variable selection
+            # Show screen navigation
             for widget in getattr(self, 'screen_nav_widgets', []):
                 widget.setVisible(True)
-            for widget in getattr(self, 'var_op_widgets', []):
-                widget.setVisible(False)
             if update_property and self.selected_object:
                 self.selected_object.properties['action_type'] = '画面跳转'
         elif text == "无":
             # Hide all action widgets
             for widget in getattr(self, 'screen_nav_widgets', []):
                 widget.setVisible(False)
-            for widget in getattr(self, 'var_op_widgets', []):
-                widget.setVisible(False)
             if update_property and self.selected_object:
                 self.selected_object.properties['action_type'] = 'custom'
         else:
-            # Variable operations - show variable widgets, hide screen navigation
+            # Variable operations - hide screen navigation
             for widget in getattr(self, 'screen_nav_widgets', []):
                 widget.setVisible(False)
-            for widget in getattr(self, 'var_op_widgets', []):
-                widget.setVisible(True)
             if update_property and self.selected_object:
                 self.selected_object.properties['action_type'] = '变量操作'
         
         # Trigger property change to save all related properties
         if update_property:
             self.on_property_change()
-    
-    def refresh_target_variables(self):
-        """Refresh the target variable combo box"""
-        if hasattr(self, 'target_var_combo'):
-            self.target_var_combo.set_data_manager(self.data_manager)
-            self.target_var_combo.set_config_manager(self.config_manager)
     
     def refresh_target_screens(self):
         """Refresh the target screen combo box"""
