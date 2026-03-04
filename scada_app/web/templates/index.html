@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SCADA Web 监控系统</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background-color: #f0f0f0;
+            overflow: hidden;
+        }
+        
+        /* Header */
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 10px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 20px;
+            font-weight: 500;
+        }
+        
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+        }
+        
+        .status-indicator {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #ff4444;
+            transition: background-color 0.3s;
+        }
+        
+        .status-indicator.connected {
+            background-color: #44ff44;
+        }
+        
+        /* Main Container */
+        .main-container {
+            display: flex;
+            height: calc(100vh - 50px);
+        }
+        
+        /* Sidebar */
+        .sidebar {
+            width: 200px;
+            background: white;
+            border-right: 1px solid #ddd;
+            padding: 15px;
+            overflow-y: auto;
+        }
+        
+        .sidebar h3 {
+            font-size: 14px;
+            color: #666;
+            margin-bottom: 10px;
+            text-transform: uppercase;
+        }
+        
+        .screen-list {
+            list-style: none;
+        }
+        
+        .screen-list li {
+            padding: 10px;
+            margin-bottom: 5px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+        
+        .screen-list li:hover {
+            background: #e9ecef;
+        }
+        
+        .screen-list li.active {
+            background: #667eea;
+            color: white;
+        }
+        
+        /* Canvas Area */
+        .canvas-container {
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+            overflow: auto;
+            background: #e0e0e0;
+        }
+        
+        #hmi-canvas {
+            background: white;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* HMI Objects */
+        .hmi-object {
+            position: absolute;
+            cursor: pointer;
+            user-select: none;
+            transition: transform 0.1s;
+        }
+        
+        .hmi-object:hover {
+            transform: scale(1.02);
+        }
+        
+        .hmi-object:active {
+            transform: scale(0.98);
+        }
+        
+        /* Button Style */
+        .hmi-button {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #333;
+            border-radius: 5px;
+            font-weight: bold;
+            font-size: 14px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        
+        .hmi-button:active {
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.2);
+        }
+        
+        /* Label Style */
+        .hmi-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            border: 1px solid transparent;
+        }
+        
+        .hmi-label.with-border {
+            border-color: #333;
+        }
+        
+        /* Light Style */
+        .hmi-light {
+            border-radius: 50%;
+            border: 2px solid #333;
+            box-shadow: inset 0 2px 5px rgba(0,0,0,0.2), 0 2px 5px rgba(0,0,0,0.2);
+        }
+        
+        /* Switch Style */
+        .hmi-switch {
+            border: 2px solid #333;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        
+        /* Gauge Style */
+        .hmi-gauge {
+            border: 2px solid #333;
+            border-radius: 50%;
+            position: relative;
+            background: white;
+        }
+        
+        .gauge-value {
+            position: absolute;
+            bottom: 20%;
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 16px;
+            font-weight: bold;
+        }
+        
+        /* Progress Bar */
+        .hmi-progress {
+            border: 2px solid #333;
+            border-radius: 5px;
+            overflow: hidden;
+            background: #f0f0f0;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.3s ease;
+        }
+        
+        .progress-text {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 12px;
+            font-weight: bold;
+            color: #333;
+        }
+        
+        /* Tag Monitor Panel */
+        .tag-panel {
+            position: fixed;
+            right: -300px;
+            top: 50px;
+            width: 300px;
+            height: calc(100vh - 50px);
+            background: white;
+            border-left: 1px solid #ddd;
+            transition: right 0.3s;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .tag-panel.open {
+            right: 0;
+        }
+        
+        .tag-panel-header {
+            padding: 15px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .tag-list {
+            flex: 1;
+            overflow-y: auto;
+            padding: 10px;
+        }
+        
+        .tag-item {
+            padding: 10px;
+            margin-bottom: 8px;
+            background: #f8f9fa;
+            border-radius: 5px;
+            font-size: 13px;
+        }
+        
+        .tag-name {
+            font-weight: bold;
+            color: #333;
+        }
+        
+        .tag-value {
+            color: #667eea;
+            font-size: 16px;
+            margin-top: 5px;
+        }
+        
+        .tag-quality {
+            font-size: 11px;
+            color: #999;
+            margin-top: 3px;
+        }
+        
+        /* Toggle Button */
+        .toggle-tags-btn {
+            position: fixed;
+            right: 20px;
+            bottom: 20px;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: #667eea;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 20px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+            z-index: 101;
+            transition: transform 0.2s;
+        }
+        
+        .toggle-tags-btn:hover {
+            transform: scale(1.1);
+        }
+        
+        /* Loading Overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+    <!-- Header -->
+    <div class="header">
+        <h1>🏭 SCADA Web 监控系统</h1>
+        <div class="connection-status">
+            <span>WebSocket:</span>
+            <div class="status-indicator" id="ws-status"></div>
+            <span id="ws-text">断开</span>
+        </div>
+    </div>
+    
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Sidebar -->
+        <div class="sidebar">
+            <h3>📋 画面列表</h3>
+            <ul class="screen-list" id="screen-list">
+                <li>加载中...</li>
+            </ul>
+        </div>
+        
+        <!-- Canvas Area -->
+        <div class="canvas-container">
+            <div id="hmi-canvas"></div>
+        </div>
+    </div>
+    
+    <!-- Tag Monitor Panel -->
+    <div class="tag-panel" id="tag-panel">
+        <div class="tag-panel-header">
+            <h3>📊 实时变量</h3>
+            <button onclick="toggleTagPanel()">✕</button>
+        </div>
+        <div class="tag-list" id="tag-list">
+            <!-- Tags will be displayed here -->
+        </div>
+    </div>
+    
+    <!-- Toggle Tags Button -->
+    <button class="toggle-tags-btn" onclick="toggleTagPanel()" title="显示/隐藏变量">📊</button>
+    
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading">
+        <div class="loading-spinner"></div>
+    </div>
+    
+    <script src="{{ url_for('static', filename='js/hmi.js') }}"></script>
+    <script>
+        // Debug test
+        console.log('HTML loaded, testing JS execution...');
+        console.log('Socket.IO available:', typeof io !== 'undefined');
+        console.log('tagValues defined:', typeof tagValues !== 'undefined');
+        console.log('screenObjects defined:', typeof screenObjects !== 'undefined');
+    </script>
+</body>
+</html>
