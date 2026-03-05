@@ -5,7 +5,8 @@ import sys
 import threading
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QHBoxLayout, QTabWidget, QMenuBar, QStatusBar,
-                             QAction, QToolBar, QLabel, QDialog, QMessageBox)
+                             QAction, QToolBar, QLabel, QDialog, QMessageBox,
+                             QTextEdit, QPushButton, QSplitter)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QIcon, QFont
 
@@ -332,13 +333,6 @@ class MainWindow(QMainWindow):
         # HMI Designer View menu items
         view_menu.addSeparator()
         
-        # Toggle grid action
-        grid_action = QAction('显示网格', self)
-        grid_action.setCheckable(True)
-        grid_action.setChecked(True)
-        grid_action.triggered.connect(lambda: self.hmi_designer.toggle_grid())
-        view_menu.addAction(grid_action)
-        
         # Resolution settings
         resolution_menu = view_menu.addMenu('画面分辨率')
         
@@ -374,45 +368,10 @@ class MainWindow(QMainWindow):
         alarm_action.triggered.connect(self.open_alarm_viewer)
         system_menu.addAction(alarm_action)
         
-        # Layout menu for HMI Designer
-        layout_menu = menubar.addMenu('布局')
-        
-        align_menu = layout_menu.addMenu('对齐')
-        
-        align_left_action = QAction('左对齐', self)
-        align_left_action.triggered.connect(lambda: self.hmi_designer.align_selected('left'))
-        align_menu.addAction(align_left_action)
-        
-        align_center_action = QAction('水平居中', self)
-        align_center_action.triggered.connect(lambda: self.hmi_designer.align_selected('center'))
-        align_menu.addAction(align_center_action)
-        
-        align_right_action = QAction('右对齐', self)
-        align_right_action.triggered.connect(lambda: self.hmi_designer.align_selected('right'))
-        align_menu.addAction(align_right_action)
-        
-        align_top_action = QAction('顶部对齐', self)
-        align_top_action.triggered.connect(lambda: self.hmi_designer.align_selected('top'))
-        align_menu.addAction(align_top_action)
-        
-        align_middle_action = QAction('垂直居中', self)
-        align_middle_action.triggered.connect(lambda: self.hmi_designer.align_selected('middle'))
-        align_menu.addAction(align_middle_action)
-        
-        align_bottom_action = QAction('底部对齐', self)
-        align_bottom_action.triggered.connect(lambda: self.hmi_designer.align_selected('bottom'))
-        align_menu.addAction(align_bottom_action)
-        
-        # Monitoring menu
-        monitoring_menu = menubar.addMenu('监控')
-        
-        start_monitor_action = QAction('开始监控', self)
-        start_monitor_action.triggered.connect(self.start_monitoring)
-        monitoring_menu.addAction(start_monitor_action)
-        
-        stop_monitor_action = QAction('停止监控', self)
-        stop_monitor_action.triggered.connect(self.stop_monitoring)
-        monitoring_menu.addAction(stop_monitor_action)
+        # Terminal output menu
+        terminal_action = QAction('终端输出', self)
+        terminal_action.triggered.connect(self.open_terminal_output)
+        system_menu.addAction(terminal_action)
         
         # Configuration menu
         config_menu = menubar.addMenu('配置')
@@ -1174,6 +1133,191 @@ class MainWindow(QMainWindow):
         """Open alarm viewer dialog"""
         dialog = AlarmViewerDialog(self, self.data_manager)
         dialog.exec_()
+    
+    def open_terminal_output(self):
+        """Open terminal output window"""
+        if not hasattr(self, '_terminal_window') or self._terminal_window is None:
+            self._terminal_window = TerminalOutputWindow(self)
+        self._terminal_window.show()
+        self._terminal_window.raise_()
+        self._terminal_window.activateWindow()
+
+
+class TerminalOutputWindow(QDialog):
+    """终端输出窗口 - 显示系统日志和调试信息"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("终端输出")
+        self.setGeometry(100, 100, 800, 600)
+        self.init_ui()
+        self.start_capturing()
+    
+    def init_ui(self):
+        layout = QVBoxLayout()
+        
+        # 输出文本框
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        self.output_text.setFont(QFont("Consolas", 10))
+        self.output_text.setStyleSheet("""
+            QTextEdit {
+                background-color: #1e1e1e;
+                color: #d4d4d4;
+                border: 1px solid #3c3c3c;
+            }
+        """)
+        layout.addWidget(self.output_text)
+        
+        # 按钮区域
+        btn_layout = QHBoxLayout()
+        
+        self.clear_btn = QPushButton("清空")
+        self.clear_btn.clicked.connect(self.clear_output)
+        btn_layout.addWidget(self.clear_btn)
+        
+        self.pause_btn = QPushButton("暂停")
+        self.pause_btn.setCheckable(True)
+        self.pause_btn.clicked.connect(self.toggle_pause)
+        btn_layout.addWidget(self.pause_btn)
+        
+        btn_layout.addStretch()
+        
+        self.copy_btn = QPushButton("复制")
+        self.copy_btn.clicked.connect(self.copy_output)
+        btn_layout.addWidget(self.copy_btn)
+        
+        self.save_btn = QPushButton("保存")
+        self.save_btn.clicked.connect(self.save_output)
+        btn_layout.addWidget(self.save_btn)
+        
+        layout.addLayout(btn_layout)
+        
+        self.setLayout(layout)
+        
+        # 定时器用于更新输出
+        self.update_timer = None
+        self.is_paused = False
+        self.output_buffer = []
+    
+    def start_capturing(self):
+        """开始捕获输出"""
+        import sys
+        from PyQt5.QtCore import QTimer
+        
+        # 保存原始stdout
+        self.original_stdout = sys.stdout
+        self.original_stderr = sys.stderr
+        
+        # 创建自定义输出流
+        class OutputStream:
+            def __init__(self, window):
+                self.window = window
+                self.max_buffer_size = 10000  # 最大缓冲区条目数
+            
+            def write(self, text):
+                if text:
+                    # 限制缓冲区大小，防止内存溢出
+                    if len(self.window.output_buffer) > self.max_buffer_size:
+                        # 丢弃最旧的 20% 数据
+                        self.window.output_buffer = self.window.output_buffer[int(self.max_buffer_size * 0.2):]
+                    self.window.output_buffer.append(text)
+            
+            def flush(self):
+                pass
+        
+        # 重定向stdout和stderr
+        sys.stdout = OutputStream(self)
+        sys.stderr = OutputStream(self)
+        
+        # 创建定时器定期更新显示
+        self.update_timer = QTimer(self)
+        self.update_timer.timeout.connect(self.update_display)
+        self.update_timer.start(100)  # 每100ms更新一次
+    
+    def update_display(self):
+        """更新显示"""
+        if self.is_paused or not self.output_buffer:
+            return
+        
+        # 批量处理输出
+        text = ''.join(self.output_buffer)
+        self.output_buffer.clear()
+        
+        if text:
+            # 限制单行长度，防止过长行导致性能问题
+            max_line_length = 1000
+            lines = text.split('\n')
+            truncated_lines = []
+            for line in lines:
+                if len(line) > max_line_length:
+                    line = line[:max_line_length] + '...[截断]'
+                truncated_lines.append(line)
+            text = '\n'.join(truncated_lines)
+            
+            self.output_text.moveCursor(self.output_text.textCursor().End)
+            self.output_text.insertPlainText(text)
+            
+            # 限制行数，防止内存溢出
+            max_lines = 5000
+            doc = self.output_text.document()
+            if doc.lineCount() > max_lines:
+                cursor = self.output_text.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.movePosition(cursor.Down, cursor.KeepAnchor, doc.lineCount() - max_lines)
+                cursor.removeSelectedText()
+    
+    def clear_output(self):
+        """清空输出"""
+        self.output_text.clear()
+        self.output_buffer.clear()
+    
+    def toggle_pause(self):
+        """暂停/继续"""
+        self.is_paused = self.pause_btn.isChecked()
+        self.pause_btn.setText("继续" if self.is_paused else "暂停")
+    
+    def copy_output(self):
+        """复制到剪贴板"""
+        from PyQt5.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.output_text.toPlainText())
+    
+    def save_output(self):
+        """保存到文件"""
+        from PyQt5.QtWidgets import QFileDialog
+        from datetime import datetime
+        
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "保存终端输出", 
+            f"terminal_output_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+            "Text Files (*.txt)"
+        )
+        
+        if file_path:
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(self.output_text.toPlainText())
+            except Exception as e:
+                QMessageBox.critical(self, "保存失败", f"无法保存文件: {e}")
+    
+    def closeEvent(self, event):
+        """关闭事件"""
+        import sys
+        
+        # 恢复原始stdout
+        if hasattr(self, 'original_stdout'):
+            sys.stdout = self.original_stdout
+        if hasattr(self, 'original_stderr'):
+            sys.stderr = self.original_stderr
+        
+        if self.update_timer:
+            self.update_timer.stop()
+        
+        # 通知父窗口
+        if self.parent() and hasattr(self.parent(), '_terminal_window'):
+            self.parent()._terminal_window = None
+        
+        event.accept()
 
 
 def main():

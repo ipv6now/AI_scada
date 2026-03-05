@@ -13,11 +13,29 @@ except ImportError:
     ModbusException = Exception
 
 import struct
-from typing import Optional, Union
+import threading
+import asyncio
+from typing import Optional, Union, Callable, Any
+from concurrent.futures import ThreadPoolExecutor, Future
+import time
+from datetime import datetime
 
 
 class ModbusHandler:
     """Modbus TCP/RTU handler for PLC communication"""
+    
+    # 全局线程池用于异步操作
+    _executor: Optional[ThreadPoolExecutor] = None
+    _executor_lock = threading.Lock()
+    
+    @classmethod
+    def get_executor(cls) -> ThreadPoolExecutor:
+        """获取线程池实例"""
+        if cls._executor is None:
+            with cls._executor_lock:
+                if cls._executor is None:
+                    cls._executor = ThreadPoolExecutor(max_workers=10)
+        return cls._executor
 
     def __init__(self, address: str, port: int = 502, protocol: str = "tcp", slave_id: int = 1,
                  baudrate: int = 9600, databits: int = 8, parity: str = 'N', stopbits: int = 1):
@@ -40,11 +58,19 @@ class ModbusHandler:
             return False
 
         try:
+            # Cleanup existing connection first
+            if self.client:
+                try:
+                    self.client.close()
+                except:
+                    pass
+                self.client = None
+            
             if self.protocol == "tcp":
                 self.client = ModbusTcpClient(
                     host=self.address,
                     port=self.port,
-                    timeout=2  # Reduced from 5 to 2 seconds
+                    timeout=0.5  # Reduced from 2 to 0.5 seconds for faster failure detection
                 )
             elif self.protocol == "rtu":
                 # For RTU, address should be serial port like 'COM1' or '/dev/ttyUSB0'
@@ -54,7 +80,7 @@ class ModbusHandler:
                     bytesize=self.databits,
                     parity=self.parity,
                     stopbits=self.stopbits,
-                    timeout=2  # Reduced from 5 to 2 seconds
+                    timeout=0.5  # Reduced from 2 to 0.5 seconds for faster failure detection
                 )
             else:
                 print(f"ModbusHandler: Unknown protocol {self.protocol}")
@@ -79,8 +105,28 @@ class ModbusHandler:
                 self.client.close()
             except:
                 pass
+        self.client = None
         self.connected = False
         print("ModbusHandler: Disconnected")
+    
+    def is_connected(self) -> bool:
+        """Check if connection is active with verification"""
+        if not self.connected or not self.client:
+            return False
+        
+        try:
+            # Try a simple read to verify connection
+            # Read holding register 0 (address 40001) - this should be safe
+            result = self.client.read_holding_registers(0, 1, slave=self.slave_id)
+            if result is None or hasattr(result, 'isError') and result.isError():
+                # Read failed, connection is broken
+                self.connected = False
+                return False
+            return True
+        except Exception as e:
+            # Exception means connection is broken
+            self.connected = False
+            return False
 
     def _parse_address(self, address: str) -> tuple:
         """
@@ -243,35 +289,42 @@ class ModbusHandler:
             True if successful, False otherwise
         """
         try:
-            print(f"ModbusHandler: Writing bit {bit_offset} = {value} to register {register_offset}")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] ModbusHandler: Writing bit {bit_offset} = {value} to register {register_offset}")
             
             # Read current register value
             result = self.client.read_holding_registers(register_offset, count=1, device_id=self.slave_id)
             if not result or result.isError():
-                print(f"ModbusHandler: Failed to read register {register_offset} for bit write")
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] ModbusHandler: Failed to read register {register_offset} for bit write")
                 return False
             
             current_value = result.registers[0]
-            print(f"ModbusHandler: Current register value: {current_value} (0x{current_value:04X})")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] ModbusHandler: Current register value: {current_value} (0x{current_value:04X})")
             
             # Modify the bit
             if value:
                 # Set bit
                 new_value = current_value | (1 << bit_offset)
-                print(f"ModbusHandler: Setting bit {bit_offset}, new value: {new_value} (0x{new_value:04X})")
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] ModbusHandler: Setting bit {bit_offset}, new value: {new_value} (0x{new_value:04X})")
             else:
                 # Clear bit
                 new_value = current_value & ~(1 << bit_offset)
-                print(f"ModbusHandler: Clearing bit {bit_offset}, new value: {new_value} (0x{new_value:04X})")
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] ModbusHandler: Clearing bit {bit_offset}, new value: {new_value} (0x{new_value:04X})")
             
             # Write back
             write_result = self.client.write_register(register_offset, new_value, device_id=self.slave_id)
             success = write_result and not write_result.isError()
-            print(f"ModbusHandler: Write result: {success}")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] ModbusHandler: Write result: {success}")
             return success
             
         except Exception as e:
-            print(f"ModbusHandler: Error writing register bit: {e}")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] ModbusHandler: Error writing register bit: {e}")
             import traceback
             traceback.print_exc()
             return False
@@ -475,3 +528,51 @@ def create_modbus_handler(params: dict) -> ModbusHandler:
     stopbits = params.get('stopbits', 1)
 
     return ModbusHandler(address, port, protocol, slave_id, baudrate, databits, parity, stopbits)
+
+
+# 异步包装函数
+def _async_read_tag_sync(handler: ModbusHandler, tag_name: str) -> Optional[Any]:
+    """同步读取函数（用于在线程池中执行）"""
+    return handler.read_tag(tag_name)
+
+
+def _async_write_tag_sync(handler: ModbusHandler, tag_name: str, value: Any, bit_offset: Optional[int]) -> bool:
+    """同步写入函数（用于在线程池中执行）"""
+    return handler.write_tag(tag_name, value, bit_offset)
+
+
+# 异步方法（需要在外部调用）
+async def async_read_tag(handler: ModbusHandler, tag_name: str) -> Optional[Any]:
+    """
+    异步读取标签值
+    
+    Args:
+        handler: ModbusHandler 实例
+        tag_name: 标签名
+        
+    Returns:
+        标签值或 None
+    """
+    executor = ModbusHandler.get_executor()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, _async_read_tag_sync, handler, tag_name)
+    return result
+
+
+async def async_write_tag(handler: ModbusHandler, tag_name: str, value: Any, bit_offset: Optional[int] = None) -> bool:
+    """
+    异步写入标签值
+    
+    Args:
+        handler: ModbusHandler 实例
+        tag_name: 标签名
+        value: 要写入的值
+        bit_offset: 位偏移（可选）
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    executor = ModbusHandler.get_executor()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, _async_write_tag_sync, handler, tag_name, value, bit_offset)
+    return result

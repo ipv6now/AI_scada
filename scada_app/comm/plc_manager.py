@@ -2,6 +2,16 @@
 PLC Manager - Handles PLC connections and communications
 """
 from enum import Enum
+import asyncio
+import threading
+from typing import Optional, Union, Any
+from concurrent.futures import ThreadPoolExecutor
+import time
+from datetime import datetime
+
+# Global write rate limiter - shared across all PLC connections
+_global_write_limiter = None
+_global_write_limiter_lock = threading.Lock()
 
 
 class SimulatedHandler:
@@ -30,6 +40,56 @@ class SimulatedHandler:
         pass
 
 
+# 异步包装函数
+def _async_plc_read_sync(handler, tag_name: str) -> Optional[Any]:
+    """同步读取函数（用于在线程池中执行）"""
+    return handler.read_tag(tag_name)
+
+
+def _async_plc_write_sync(handler, tag_name: str, value: Any, bit_offset: Optional[int]) -> bool:
+    """同步写入函数（用于在线程池中执行）"""
+    return handler.write_tag(tag_name, value, bit_offset)
+
+
+# 异步方法
+async def async_plc_read(handler, tag_name: str) -> Optional[Any]:
+    """
+    异步读取 PLC 标签值
+    
+    Args:
+        handler: PLC handler 实例
+        tag_name: 标签名
+        
+    Returns:
+        标签值或 None
+    """
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    result = await loop.run_in_executor(executor, _async_plc_read_sync, handler, tag_name)
+    executor.shutdown(wait=False)
+    return result
+
+
+async def async_plc_write(handler, tag_name: str, value: Any, bit_offset: Optional[int] = None) -> bool:
+    """
+    异步写入 PLC 标签值
+    
+    Args:
+        handler: PLC handler 实例
+        tag_name: 标签名
+        value: 要写入的值
+        bit_offset: 位偏移（可选）
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    loop = asyncio.get_event_loop()
+    executor = ThreadPoolExecutor(max_workers=1)
+    result = await loop.run_in_executor(executor, _async_plc_write_sync, handler, tag_name, value, bit_offset)
+    executor.shutdown(wait=False)
+    return result
+
+
 class PLCProtocol(Enum):
     MODBUS_TCP = "Modbus TCP"
     MODBUS_RTU = "Modbus RTU"
@@ -40,11 +100,20 @@ class PLCProtocol(Enum):
 
 
 class PLCConnection:
-    def __init__(self, name, protocol, address, port=502, slave_id=1, extra_params=None, data_manager=None):
+    def __init__(self, name, protocol, address, port=None, slave_id=1, extra_params=None, data_manager=None):
         self.name = name
         self.protocol = protocol
         self.address = address
-        self.port = port
+        
+        # Set default port based on protocol
+        if port is None:
+            if protocol == PLCProtocol.SIEMENS_S7:
+                self.port = 102  # S7 default port
+            else:
+                self.port = 502  # Modbus default port
+        else:
+            self.port = port
+            
         self.slave_id = slave_id
         self.extra_params = extra_params or {}
         self.connected = False
@@ -52,12 +121,18 @@ class PLCConnection:
         self.handler = None  # Protocol-specific handler
         self.data_manager = data_manager  # Reference to data manager for read-after-write
         
-        # Write rate limiter for this connection
+        # Use global write rate limiter shared across all connections
         from .write_rate_limiter import WriteRateLimiter
-        self._write_limiter = WriteRateLimiter(
-            min_interval_ms=extra_params.get('write_min_interval_ms', 200),
-            batch_window_ms=extra_params.get('write_batch_window_ms', 100)
-        )
+        global _global_write_limiter
+        
+        with _global_write_limiter_lock:
+            if _global_write_limiter is None:
+                _global_write_limiter = WriteRateLimiter()
+                _global_write_limiter.start()
+                print(f"Global WriteRateLimiter initialized (min_interval={WriteRateLimiter.MIN_INTERVAL_MS}ms)")
+        
+        # Each connection should have its own WriteRateLimiter instance
+        self._write_limiter = WriteRateLimiter()
         self._write_limiter.set_write_executor(self._execute_write)
         self._write_limiter.start()
         
@@ -70,10 +145,19 @@ class PLCConnection:
         """
         import time
         
-        # Ensure write rate limiter is running
-        if hasattr(self, '_write_limiter') and not self._write_limiter.is_processing():
-            self._write_limiter.start()
-            print(f"WriteRateLimiter restarted for {self.name}")
+        # Global write rate limiter is already started during initialization
+        # No need to restart it here
+        
+        # Disconnect existing handler if any (for reconnection)
+        if self.handler:
+            try:
+                if hasattr(self.handler, 'disconnect'):
+                    self.handler.disconnect()
+                elif hasattr(self.handler, '_cleanup'):
+                    self.handler._cleanup()
+            except Exception as e:
+                print(f"Error disconnecting existing handler for {self.name}: {e}")
+            self.connected = False
         
         retries = 0
         while retries < max_retries:
@@ -133,14 +217,18 @@ class PLCConnection:
                 else:
                     retries += 1
                     if retries < max_retries:
-                        print(f"Connection failed, retrying {retries}/{max_retries}...")
-                        time.sleep(retry_delay)
+                        # Exponential backoff: 1s, 2s, 4s, etc.
+                        delay = retry_delay * (2 ** (retries - 1))
+                        print(f"Connection failed, retrying {retries}/{max_retries} in {delay}s...")
+                        time.sleep(delay)
             except Exception as e:
                 print(f"Error connecting to {self.name}: {str(e)}")
                 retries += 1
                 if retries < max_retries:
-                    print(f"Retrying {retries}/{max_retries}...")
-                    time.sleep(retry_delay)
+                    # Exponential backoff: 1s, 2s, 4s, etc.
+                    delay = retry_delay * (2 ** (retries - 1))
+                    print(f"Retrying {retries}/{max_retries} in {delay}s...")
+                    time.sleep(delay)
         
         self.connected = False
         print(f"Failed to connect to {self.name} after {max_retries} attempts")
@@ -166,18 +254,62 @@ class PLCConnection:
                     return tag.address
         return tag_name
     
+    def _show_write_error(self, tag_name, value, error_msg):
+        """Show write error message to user"""
+        # You can implement UI notification here
+        # For example, using QMessageBox or custom notification system
+        try:
+            # Try to show message box if running in GUI mode
+            from PyQt5.QtWidgets import QMessageBox, QApplication
+            from PyQt5.QtCore import QTimer
+            
+            # Check if there's an active QApplication instance
+            app = QApplication.instance()
+            if app is None:
+                return
+            
+            # Try to get the main window to update status bar
+            main_window = None
+            for widget in app.topLevelWidgets():
+                if hasattr(widget, 'status_bar') and hasattr(widget, 'showMessage'):
+                    main_window = widget
+                    break
+            
+            # Update status bar with error message
+            if main_window:
+                status_msg = f"写入错误: {tag_name} = {value} ({error_msg})"
+                main_window.status_bar.showMessage(status_msg, 5000)  # Show for 5 seconds
+            
+            def show_error_dialog():
+                try:
+                    msg = QMessageBox()
+                    msg.setIcon(QMessageBox.Warning)
+                    msg.setWindowTitle("写入错误")
+                    msg.setText(f"写入操作失败")
+                    msg.setInformativeText(f"标签: {tag_name}\n值: {value}\n错误: {error_msg}")
+                    msg.setStandardButtons(QMessageBox.Ok)
+                    msg.exec_()
+                except Exception:
+                    pass
+            
+            # Use QTimer to show message box in main thread
+            QTimer.singleShot(0, show_error_dialog)
+            
+        except Exception:
+            pass
+    
     def read_tag(self, tag_name):
         """Read a tag value from the PLC with error handling and auto-reconnect"""
         try:
             if not self.connected:
-                print(f"PLC {self.name} not connected, attempting to reconnect...")
-                if not self.connect(max_retries=2, retry_delay=0.5):
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] PLC {self.name} not connected, attempting to reconnect...")
+                # Use faster reconnect with fewer retries to prevent UI blocking
+                if not self.connect(max_retries=1, retry_delay=0.2):
                     return None
             
             # Convert tag name to address for Modbus
             read_address = self._get_tag_address(tag_name)
-            if read_address != tag_name:
-                print(f"PLCConnection.read_tag: Converted tag '{tag_name}' to address '{read_address}'")
                 
             if self.protocol == PLCProtocol.SIMULATED and self.handler:
                 return self.handler.read_tag(tag_name)
@@ -185,28 +317,27 @@ class PLCConnection:
                 result = self.handler.read_tag(read_address)
                 # If read failed (returned None), mark as disconnected and try to reconnect
                 if result is None:
-                    print(f"Read failed for {tag_name} (address: {read_address}), connection may be lost. Attempting to reconnect...")
                     self.connected = False
-                    if self.connect(max_retries=2, retry_delay=0.5):
+                    # Use faster reconnect with fewer retries to prevent UI blocking
+                    if self.connect(max_retries=1, retry_delay=0.2):
                         # Retry read after reconnection
                         if self.handler and hasattr(self.handler, 'read_tag'):
                             return self.handler.read_tag(read_address)
                 return result
             # Placeholder implementation for other protocols
             return 0
-        except Exception as e:
-            print(f"Error reading tag {tag_name} from {self.name}: {str(e)}")
+        except Exception:
             # Mark as disconnected on error
             self.connected = False
             # Try to reconnect
-            print(f"Attempting to reconnect to {self.name}...")
-            if self.connect(max_retries=2, retry_delay=0.5):
+            # Use faster reconnect with fewer retries to prevent UI blocking
+            if self.connect(max_retries=1, retry_delay=0.2):
                 # Retry read after reconnection
                 try:
                     if self.handler and hasattr(self.handler, 'read_tag'):
                         return self.handler.read_tag(read_address)
-                except Exception as e2:
-                    print(f"Error reading tag after reconnection: {str(e2)}")
+                except Exception:
+                    pass
             return None
     
     def write_tag(self, tag_name, value, bit_offset=None):
@@ -226,95 +357,136 @@ class PLCConnection:
         """Actually execute the write (called by WriteRateLimiter)"""
         # Use communication coordinator to wait for polling to complete
         from .communication_coordinator import coordinator
+        from datetime import datetime
         
         # Get bit_offset from pending write or tag configuration
         pending_bit_offset = getattr(self, '_pending_bit_offset', None)
         
-        print(f"PLCConnection._execute_write: {tag_name} = {value}, bit_offset={pending_bit_offset}, protocol={self.protocol}, connected={self.connected}")
-        
         def do_write():
+            # Create local copies of variables that might be modified
+            local_write_address = tag_name
+            local_bit_offset = pending_bit_offset
+            local_value = value
+            
             try:
                 if not self.connected:
-                    print(f"PLC {self.name} not connected, attempting to reconnect...")
                     if not self.connect(max_retries=2, retry_delay=0.5):
-                        return False
+                        # Show error message for connection failure
+                        self._show_write_error(tag_name, local_value, f"Failed to connect to {self.name}")
+                        return True  # Discard write but don't block
                 
-                # Get the actual address for Modbus protocol
-                write_address = tag_name
-                bit_offset = pending_bit_offset  # Use bit_offset from parameter first
-                if self.protocol in [PLCProtocol.MODBUS_TCP, PLCProtocol.MODBUS_RTU]:
-                    # For Modbus, we need to convert tag name to address
-                    if self.data_manager and hasattr(self.data_manager, 'tags'):
-                        tag = self.data_manager.tags.get(tag_name)
-                        if tag and hasattr(tag, 'address') and tag.address:
-                            write_address = tag.address
-                            # Only use tag's bit_offset if not provided as parameter
-                            if bit_offset is None:
-                                bit_offset = getattr(tag, 'bit_offset', None)
-                            print(f"PLCConnection: Converted tag '{tag_name}' to address '{write_address}', bit_offset={bit_offset}")
-                        elif tag:
-                            print(f"PLCConnection: Warning - Tag '{tag_name}' has no address, using tag name")
-                        else:
-                            print(f"PLCConnection: Warning - Tag '{tag_name}' not found in data_manager, using tag name as address")
+                # Get the actual address for all protocols
+                local_write_address = tag_name
+                local_bit_offset = pending_bit_offset  # Use bit_offset from parameter first
+                
+                # For all protocols, try to get address from tag configuration
+                if self.data_manager and hasattr(self.data_manager, 'tags'):
+                    tag = self.data_manager.tags.get(tag_name)
+                    if tag and hasattr(tag, 'address') and tag.address:
+                        local_write_address = tag.address
+                        # Only use tag's bit_offset if not provided as parameter
+                        if local_bit_offset is None:
+                            local_bit_offset = getattr(tag, 'bit_offset', None)
+                        
+                        # Check if this is a word address with bit offset - convert to bit address for S7
+                        if (self.protocol == PLCProtocol.SIEMENS_S7 and 
+                            local_bit_offset is not None and 
+                            local_bit_offset >= 0 and 
+                            local_write_address.startswith(('MW', 'DBW', 'IW', 'QW'))):
+                            # For word addresses with bit offset, we need to read-modify-write the entire word
+                            # to avoid data inconsistency when the tag only monitors the word address
+                            try:
+                                # Read the current value of the word
+                                current_value = self.read_tag(tag_name)
+                                if current_value is None:
+                                    # Show error message for read failure
+                                    self._show_write_error(tag_name, local_value, "Failed to read current value for read-modify-write")
+                                    return True  # Discard write but don't block
+                                
+                                # Convert to integer for bit manipulation
+                                if isinstance(current_value, bool):
+                                    int_value = 1 if current_value else 0
+                                else:
+                                    int_value = int(current_value)
+                                
+                                # Modify the specific bit
+                                if local_value:
+                                    # Set the bit
+                                    new_value = int_value | (1 << local_bit_offset)
+                                else:
+                                    # Clear the bit
+                                    new_value = int_value & ~(1 << local_bit_offset)
+                                
+                                # Write the modified value back to the word address
+                                local_write_address = tag.address  # Use original word address
+                                local_value = new_value  # Use modified value
+                                local_bit_offset = None  # Clear bit_offset since we're writing the whole word
+                                
+                            except Exception as e:
+                                # Show error message for read-modify-write exception
+                                self._show_write_error(tag_name, local_value, f"Read-modify-write error: {e}")
+                                return True  # Discard write but don't block
+                    elif tag:
+                        pass  # Tag has no address, using tag name
                     else:
-                        print(f"PLCConnection: Warning - No data_manager available for tag '{tag_name}'")
+                        pass  # Tag not found, using tag name as address
+                else:
+                    pass  # No data_manager available
                 
                 if self.protocol == PLCProtocol.SIMULATED and self.handler:
-                    print(f"PLCConnection: Using SIMULATED handler for {tag_name}")
                     result = self.handler.write_tag(tag_name, value)
                     if result:
                         self._read_after_write(tag_name)
                     return result
                 elif self.handler and hasattr(self.handler, 'write_tag'):
-                    print(f"PLCConnection: Using handler.write_tag for {write_address} (original tag: {tag_name})")
-                    # Pass bit_offset for Modbus register bit writing
-                    if bit_offset is not None:
-                        result = self.handler.write_tag(write_address, value, bit_offset=bit_offset)
-                    else:
-                        result = self.handler.write_tag(write_address, value)
-                    # If write failed, determine if it's a connection issue or communication busy
-                    if not result:
-                        # Check if the handler has specific error information
-                        # For S7 connections, we want to distinguish between "Job pending" and actual disconnections
-                        if self.handler and hasattr(self.handler, 'last_error'):
-                            last_error = self.handler.last_error
-                            # If it's a job pending error, don't mark as disconnected, just return False
-                            if last_error and ('job pending' in str(last_error).lower() or 'cli' in str(last_error).lower()):
-                                print(f"Job pending for {tag_name}, not marking as disconnected (error: {last_error})")
-                                return False
-                        # For other failures, mark as disconnected and try to reconnect
-                        print(f"Write failed for {tag_name}, connection may be lost. Attempting to reconnect...")
-                        self.connected = False
-                        if self.connect(max_retries=2, retry_delay=0.5):
-                            # Retry write after reconnection
-                            if self.handler and hasattr(self.handler, 'write_tag'):
-                                if bit_offset is not None:
-                                    result = self.handler.write_tag(write_address, value, bit_offset=bit_offset)
-                                else:
-                                    result = self.handler.write_tag(write_address, value)
-                                if result:
-                                    self._read_after_write(tag_name)
-                                return result
-                    else:
-                        # Write succeeded, read back the value
-                        self._read_after_write(tag_name)
-                    return result
+                    
+                    # Try to write with bit_offset if provided
+                    try:
+                        if local_bit_offset is not None:
+                            result = self.handler.write_tag(local_write_address, local_value, bit_offset=local_bit_offset)
+                        else:
+                            result = self.handler.write_tag(local_write_address, local_value)
+                        
+                        if result:
+                            # Write succeeded, read back the value
+                            self._mark_recent_write(tag_name)
+                            self._read_after_write(tag_name)
+                            return True
+                        else:
+                            # Write failed, get error information and show error message
+                            error_msg = "Unknown error"
+                            if self.handler and hasattr(self.handler, 'last_error') and self.handler.last_error:
+                                error_msg = self.handler.last_error
+                            
+                            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            print(f"[{current_time}] Write failed for {tag_name}: {error_msg}")
+                            
+                            # Show error message to user (you can implement UI notification here)
+                            self._show_write_error(tag_name, local_value, error_msg)
+                            
+                            # Return True to discard the write but not block subsequent writes
+                            return True
+                            
+                    except Exception as e:
+                        # Exception during write, show error and discard
+                        # Show error message to user
+                        self._show_write_error(tag_name, local_value, str(e))
+                        
+                        # Return True to discard the write but not block subsequent writes
+                        return True
                 # Placeholder implementation for other protocols
-                print(f"Writing {value} to {tag_name}")
                 return True
             except Exception as e:
                 # Check if this is a "Job pending" type error which indicates communication busy, not disconnection
                 error_str = str(e).lower()
                 if 'job pending' in error_str or 'cli' in error_str:
-                    print(f"Job pending error for {tag_name}, not marking as disconnected")
                     return False
                 else:
-                    print(f"Error writing tag {tag_name} to {self.name}: {str(e)}")
                     # Mark as disconnected on real errors (not communication busy)
                     self.connected = False
                     # Try to reconnect
-                    print(f"Attempting to reconnect to {self.name}...")
-                    if self.connect(max_retries=2, retry_delay=0.5):
+                    # Use faster reconnect with fewer retries to prevent UI blocking
+                    if self.connect(max_retries=1, retry_delay=0.2):
                         # Retry write after reconnection
                         try:
                             if self.handler and hasattr(self.handler, 'write_tag'):
@@ -325,12 +497,24 @@ class PLCConnection:
                                 if result:
                                     self._read_after_write(tag_name)
                                 return result
-                        except Exception as e2:
-                            print(f"Error writing tag after reconnection: {str(e2)}")
+                        except Exception:
+                            pass
                     return False
         
         # Execute write through coordinator to ensure it waits for polling
         return coordinator.execute_write_operation(do_write)
+    
+    def _mark_recent_write(self, tag_name: str):
+        """Mark a tag as recently written to prevent data polling from overwriting it"""
+        # Get the data poller from data_manager if available
+        if self.data_manager and hasattr(self.data_manager, 'data_poller') and self.data_manager.data_poller:
+            try:
+                self.data_manager.data_poller.mark_recent_write(tag_name)
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] Marked {tag_name} as recently written")
+            except Exception as e:
+                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                print(f"[{current_time}] Error marking recent write for {tag_name}: {e}")
     
     def _read_after_write(self, tag_name):
         """Read back the value after a successful write to verify and update data manager"""
@@ -338,18 +522,19 @@ class PLCConnection:
             return
         
         try:
-            # Small delay to allow PLC to process the write
+            # Small delay to allow PLC to process the write (use shorter delay to prevent blocking)
             import time
-            time.sleep(0.05)  # 50ms delay
+            time.sleep(0.01)  # Reduced from 50ms to 10ms
             
             # Read the value back
             read_value = self.read_tag(tag_name)
             if read_value is not None:
-                # Update data manager with the read value
+                # Always update data manager with the full register value
+                # DO NOT extract bit value here - Tag.value must store the complete register value
+                # Bit extraction is done at the control level (in HMI controls)
                 self.data_manager.update_tag_value(tag_name, read_value)
-                print(f"Read-after-write: {tag_name} = {read_value}")
-        except Exception as e:
-            print(f"Error reading back {tag_name} after write: {e}")
+        except Exception:
+            pass
     
     def get_write_stats(self):
         """Get write rate limiter statistics"""
@@ -364,11 +549,10 @@ class PLCConnection:
             
             if self.handler and hasattr(self.handler, 'disconnect'):
                 self.handler.disconnect()
-        except Exception as e:
-            print(f"Error disconnecting from {self.name}: {str(e)}")
+        except Exception:
+            pass
         finally:
             self.connected = False
-            print(f"Disconnected from {self.name}")
         
 
 class PLCManager:
@@ -417,19 +601,74 @@ class PLCManager:
     def _connect_all_sync(self):
         """Synchronous connection to all PLCs (internal use)"""
         self.active_connections.clear()
+        failed_connections = []
+        
         for name, conn in self.connections.items():
             print(f"Attempting to connect to PLC: {name} at {conn.address}")
-            if conn.connect():
+            if conn.connect(max_retries=3, retry_delay=1.0):
                 self.active_connections.append(conn)
                 print(f"Successfully connected to PLC: {name}")
             else:
                 print(f"Failed to connect to PLC: {name}")
+                failed_connections.append(conn)
+        
+        # Start background reconnection thread for failed connections
+        if failed_connections:
+            self._start_background_reconnect(failed_connections)
+    
+    def _start_background_reconnect(self, connections):
+        """Start background thread to reconnect failed connections"""
+        import threading
+        import time
+        
+        def reconnect_worker():
+            retry_count = 0
+            max_retries = 60  # Try for up to 5 minutes (60 * 5s = 300s)
+            
+            while retry_count < max_retries and connections:
+                time.sleep(5)  # Wait 5 seconds between reconnection attempts
+                
+                # Try to reconnect each failed connection
+                for conn in list(connections):
+                    if conn in self.active_connections:
+                        # Already connected, remove from list
+                        connections.remove(conn)
+                        continue
+                    
+                    try:
+                        print(f"[Background] Attempting to reconnect to PLC: {conn.name}")
+                        if conn.connect(max_retries=1, retry_delay=0.5):
+                            self.active_connections.append(conn)
+                            connections.remove(conn)
+                            print(f"[Background] Successfully reconnected to PLC: {conn.name}")
+                        else:
+                            print(f"[Background] Failed to reconnect to PLC: {conn.name}")
+                    except Exception as e:
+                        print(f"[Background] Error reconnecting to PLC {conn.name}: {e}")
+                
+                retry_count += 1
+            
+            if connections:
+                print(f"[Background] Stopped reconnection attempts for: {[c.name for c in connections]}")
+        
+        # Start reconnection thread
+        reconnect_thread = threading.Thread(target=reconnect_worker, daemon=True)
+        reconnect_thread.start()
+        print(f"[Background] Started reconnection thread for {[c.name for c in connections]}")
                 
     def disconnect_all(self):
         """Disconnect from all PLCs"""
         for conn in self.active_connections:
             conn.disconnect()
         self.active_connections.clear()
+        
+        # Stop global write rate limiter
+        global _global_write_limiter
+        with _global_write_limiter_lock:
+            if _global_write_limiter is not None:
+                _global_write_limiter.stop()
+                _global_write_limiter = None
+                print("Global WriteRateLimiter stopped")
         
     def get_connection(self, name):
         """Get a specific connection by name"""
@@ -462,22 +701,74 @@ class PLCManager:
             bit_offset: Optional bit offset for register bit writing (0-15)
         """
         try:
-            print(f"PLCManager.write_tag: {tag_name} = {value}, bit_offset={bit_offset}")
+            # Get the tag's PLC connection from data manager
+            target_connection = None
+            if self.data_manager and hasattr(self.data_manager, 'tags'):
+                tag = self.data_manager.tags.get(tag_name)
+                if tag and hasattr(tag, 'plc_connection') and tag.plc_connection:
+                    target_connection = tag.plc_connection
+            
+            # If we have a target connection, try to write to it first
+            if target_connection and target_connection in self.connections:
+                conn = self.connections[target_connection]
+                try:
+                    # Try to connect if not already connected
+                    if hasattr(conn, 'connected') and not conn.connected:
+                        if not conn.connect(max_retries=3, retry_delay=1.0):
+                            # Show error message for connection failure
+                            if hasattr(conn, '_show_write_error'):
+                                conn._show_write_error(tag_name, value, f"Failed to connect to {target_connection}")
+                            return True  # Discard write but return success to avoid blocking
+                        else:
+                            # Add to active connections
+                            if conn not in self.active_connections:
+                                self.active_connections.append(conn)
+                    
+                    # Try to write with bit_offset if provided
+                    if bit_offset is not None and hasattr(conn, 'write_tag'):
+                        result = conn.write_tag(tag_name, value, bit_offset)
+                    else:
+                        result = conn.write_tag(tag_name, value)
+                    
+                    # WriteRateLimiter returns True immediately when queued
+                    if result:
+                        return True
+                    else:
+                        # Show error message for write queue failure
+                        if hasattr(conn, '_show_write_error'):
+                            conn._show_write_error(tag_name, value, f"Failed to queue write to {target_connection}")
+                        return True  # Discard write but return success to avoid blocking
+                        
+                except Exception as e:
+                    current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{current_time}] PLCManager: Error writing to target connection {target_connection}: {e}")
+                    return False
+            
+            # If no target connection or target connection failed, try all connections
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] PLCManager: Trying all connections for {tag_name}")
             
             # Check if active_connections is empty
             if not self.active_connections:
                 # Only log warning periodically to avoid spam
                 if self._should_log_empty_warning():
-                    print(f"PLCManager: No active connections, trying all connections...")
-                    print(f"PLCManager: Available connections: {list(self.connections.keys())}")
+                    current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{current_time}] PLCManager: No active connections, trying all connections...")
+                    current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{current_time}] PLCManager: Available connections: {list(self.connections.keys())}")
                 
                 if not self.connections:
                     if self._should_log_empty_warning():
-                        print(f"PLCManager: No connections configured!")
+                        current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        print(f"[{current_time}] PLCManager: No connections configured!")
                     return False
                 
                 for conn_name, conn in self.connections.items():
                     try:
+                        # Skip target connection if we already tried it
+                        if target_connection and conn_name == target_connection:
+                            continue
+                            
                         # Try to connect if not already connected
                         if hasattr(conn, 'connected') and not conn.connected:
                             if not conn.connect(max_retries=1, retry_delay=0.5):
@@ -489,13 +780,15 @@ class PLCManager:
                         else:
                             result = conn.write_tag(tag_name, value)
                         if result:
-                            print(f"PLCManager: Successfully wrote {tag_name} = {value} to {conn_name}")
+                            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                            print(f"[{current_time}] PLCManager: Successfully wrote {tag_name} = {value} to {conn_name}")
                             # Add to active connections
                             if conn not in self.active_connections:
                                 self.active_connections.append(conn)
                             return True
                     except Exception as e:
-                        print(f"PLCManager: Error writing to {conn_name}: {e}")
+                        current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        print(f"[{current_time}] PLCManager: Error writing to {conn_name}: {e}")
                         continue
             else:
                 # Try to write to all active connections
@@ -509,13 +802,15 @@ class PLCManager:
                         if result:
                             return True
                     except Exception as e:
-                        print(f"PLCManager: Error writing to {conn.name}: {e}")
+                        current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        print(f"[{current_time}] PLCManager: Error writing to {conn.name}: {e}")
                         continue
             
             return False
             
         except Exception as e:
-            print(f"PLCManager: Error writing tag {tag_name}: {e}")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] PLCManager: Error writing tag {tag_name}: {e}")
             return False
     
     def read_tag(self, tag_name):
@@ -525,7 +820,8 @@ class PLCManager:
             if not self.active_connections:
                 # Only log warning periodically to avoid spam
                 if self._should_log_empty_warning():
-                    print(f"PLCManager: No active connections, trying all connections...")
+                    current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                    print(f"[{current_time}] PLCManager: No active connections, trying all connections...")
                 
                 # If no active connections, try all configured connections
                 for conn_name, conn in self.connections.items():
@@ -539,7 +835,8 @@ class PLCManager:
                                 return value
                         except Exception as e:
                             if self._should_log_empty_warning():
-                                print(f"PLCManager: Error reading from {conn_name}: {e}")
+                                current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                                print(f"[{current_time}] PLCManager: Error reading from {conn_name}: {e}")
                             continue
             else:
                 # Try to read from all active connections
@@ -549,13 +846,15 @@ class PLCManager:
                         if value is not None:
                             return value
                     except Exception as e:
-                        print(f"PLCManager: Error reading from {conn.name}: {e}")
+                        current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+                        print(f"[{current_time}] PLCManager: Error reading from {conn.name}: {e}")
                         continue
             
             return None
             
         except Exception as e:
-            print(f"PLCManager: Error reading tag {tag_name}: {e}")
+            current_time = datetime.now().strftime('%H:%M:%S.%f')[:-3]
+            print(f"[{current_time}] PLCManager: Error reading tag {tag_name}: {e}")
             return None
     
     def read_tags_batch(self, tag_list):

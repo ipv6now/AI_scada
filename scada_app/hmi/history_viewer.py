@@ -392,6 +392,15 @@ class TrendChartWidget(QWidget):
         """获取当前图表的统计数据"""
         return self.current_statistics.copy()
     
+    def set_grid_visible(self, visible: bool):
+        """设置网格显示/隐藏"""
+        if MATPLOTLIB_AVAILABLE:
+            if visible:
+                self.ax.grid(True, alpha=0.3, linestyle='--')
+            else:
+                self.ax.grid(False)
+            self.canvas.draw()
+    
     def clear(self):
         """清除图表"""
         if MATPLOTLIB_AVAILABLE:
@@ -713,6 +722,7 @@ class HistoryViewerWidget(QWidget):
         
         self.show_grid_cb = QCheckBox("显示网格")
         self.show_grid_cb.setChecked(True)
+        self.show_grid_cb.stateChanged.connect(self._on_grid_toggled)
         row2_layout.addWidget(self.show_grid_cb)
         
         query_layout.addLayout(row2_layout)
@@ -901,6 +911,10 @@ class HistoryViewerWidget(QWidget):
     def _on_tags_changed(self):
         """标签选择变化"""
         pass
+    
+    def _on_grid_toggled(self, state):
+        """网格显示切换"""
+        self.trend_chart.set_grid_visible(state == Qt.Checked)
     
     def _execute_query(self):
         """执行历史数据查询"""

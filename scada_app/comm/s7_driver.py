@@ -15,19 +15,21 @@ import snap7
 import struct
 import time
 import threading
+import asyncio
 import logging
 from enum import IntEnum
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Union, Callable, Any, Tuple
 from collections import defaultdict
 from queue import Queue, Empty
+from concurrent.futures import ThreadPoolExecutor
 
 # Import snap7 Area type for compatibility
 try:
-    from snap7.type import Area as Snap7Area
+    from snap7.types import Areas as Snap7Area
 except ImportError:
     try:
-        from snap7.types import Areas as Snap7Area
+        from snap7.type import Area as Snap7Area
     except ImportError:
         # Fallback for older snap7 versions
         class Snap7Area:
@@ -151,11 +153,36 @@ class S7Connection:
         
     @property
     def is_connected(self) -> bool:
-        """Check if connection is active"""
+        """Check if connection is active with actual verification"""
         with self._lock:
             if self._client and self._connected:
                 try:
-                    return self._client.get_connected()
+                    # First check snap7's internal state
+                    if not self._client.get_connected():
+                        self._connected = False
+                        return False
+                    
+                    # Only verify connection if it's been a while since last check
+                    # This prevents excessive CPU info reads
+                    current_time = time.time()
+                    if hasattr(self, '_last_connection_check'):
+                        if current_time - self._last_connection_check < 5.0:  # Only check every 5 seconds
+                            return True
+                    
+                    # Additional verification: try to read CPU info
+                    # This is a lightweight operation that verifies the connection is actually working
+                    try:
+                        # Try to get CPU info - this will fail if connection is broken
+                        cpu_info = self._client.get_cpu_info()
+                        # If we got here, connection is good
+                        self._last_connection_check = current_time
+                        return True
+                    except Exception as cpu_error:
+                        # CPU info read failed - connection is broken
+                        self._logger.debug(f"CPU info check failed: {cpu_error}")
+                        self._connected = False
+                        return False
+                        
                 except:
                     self._connected = False
                     return False
@@ -181,8 +208,21 @@ class S7Connection:
             try:
                 self._logger.info(f"Connecting to {self.config.ip_address}:{self.config.port}")
                 
+                # Cleanup any existing connection first
+                self._cleanup()
+                
                 # Create new client
                 self._client = snap7.client.Client()
+                
+                # Set connection timeout (handle different snap7 versions)
+                try:
+                    self._client.set_connection_type(snap7.types.ConnectionType.PG)
+                except AttributeError:
+                    # Fallback for older snap7 versions
+                    try:
+                        self._client.set_connection_type(1)  # PG connection type
+                    except:
+                        pass  # Some versions don't have this method
                 
                 # Connect to PLC
                 self._client.connect(
@@ -304,6 +344,8 @@ class S7Connection:
                     retry_delay = 0.1 if is_job_pending else self.config.retry_interval
                     time.sleep(retry_delay)
                 else:
+                    # All retries failed - mark connection as disconnected
+                    self._connected = False
                     raise S7Error(f"Operation failed after {max_attempts} attempts: {e}")
     
     def get_client(self) -> snap7.client.Client:
@@ -433,6 +475,19 @@ class S7Driver:
     MAX_PDU_SIZE = 480
     PDU_HEADER_SIZE = 18
     MAX_DATA_SIZE = MAX_PDU_SIZE - PDU_HEADER_SIZE  # 462 bytes available for data
+    
+    # 全局线程池用于异步操作
+    _executor: Optional[ThreadPoolExecutor] = None
+    _executor_lock = threading.Lock()
+    
+    @classmethod
+    def get_executor(cls) -> ThreadPoolExecutor:
+        """获取线程池实例"""
+        if cls._executor is None:
+            with cls._executor_lock:
+                if cls._executor is None:
+                    cls._executor = ThreadPoolExecutor(max_workers=10)
+        return cls._executor
     
     def __init__(self, config: S7ConnectionConfig):
         self.config = config
@@ -1189,3 +1244,52 @@ if __name__ == "__main__":
             print("Disconnected from PLC")
     else:
         print("Failed to connect to PLC")
+
+
+# 异步包装函数
+def _async_read_tag_sync(driver: S7Driver, tag: Union[S7Tag, str], data_type: str = "BOOL") -> Union[bool, int, float]:
+    """同步读取函数（用于在线程池中执行）"""
+    return driver.read_tag(tag, data_type)
+
+
+def _async_write_tag_sync(driver: S7Driver, tag: Union[S7Tag, str], value: Union[bool, int, float], data_type: str = "BOOL") -> bool:
+    """同步写入函数（用于在线程池中执行）"""
+    return driver.write_tag(tag, value, data_type)
+
+
+# 异步方法
+async def async_read_tag(driver: S7Driver, tag: Union[S7Tag, str], data_type: str = "BOOL") -> Union[bool, int, float]:
+    """
+    异步读取标签值
+    
+    Args:
+        driver: S7Driver 实例
+        tag: S7Tag 或地址字符串
+        data_type: 数据类型
+        
+    Returns:
+        标签值
+    """
+    executor = S7Driver.get_executor()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, _async_read_tag_sync, driver, tag, data_type)
+    return result
+
+
+async def async_write_tag(driver: S7Driver, tag: Union[S7Tag, str], value: Union[bool, int, float], data_type: str = "BOOL") -> bool:
+    """
+    异步写入标签值
+    
+    Args:
+        driver: S7Driver 实例
+        tag: S7Tag 或地址字符串
+        value: 要写入的值
+        data_type: 数据类型
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    executor = S7Driver.get_executor()
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(executor, _async_write_tag_sync, driver, tag, value, data_type)
+    return result

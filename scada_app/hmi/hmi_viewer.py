@@ -365,9 +365,10 @@ class HMIButtonRuntime(HMIButton):
             bound_var = self.variables[0]
             value = data_manager.get_tag_value(bound_var.variable_name)
             if value is not None:
-                # Handle bit offset if specified
+                # Only apply bit offset if value is still numeric (not already extracted)
+                # Data poller already extracts bit values, so we only handle this if needed
                 bit_offset = getattr(bound_var, 'bit_offset', None)
-                if bit_offset is not None and isinstance(value, (int, float)):
+                if bit_offset is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
                     value = (int(value) >> int(bit_offset)) & 1
                 if value:
                     color = QColor(self.properties.get('on_color', '#4CAF50'))
@@ -417,12 +418,14 @@ class HMIButtonRuntime(HMIButton):
                     
                     if operation == '置位':
                         new_value = True
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Set {var_name} to True")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will set {var_name} to True after write")
                     elif operation == '复位':
                         new_value = False
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Reset {var_name} to False")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will reset {var_name} to False after write")
                     elif operation == '取反':
                         # For bit offset, toggle only the specific bit
                         if bit_offset is not None:
@@ -433,10 +436,16 @@ class HMIButtonRuntime(HMIButton):
                             # If current value is boolean or we don't have a value, read from PLC
                             if current_raw_value is None or isinstance(current_raw_value, bool):
                                 # Read latest value from PLC
-                                plc_value = data_manager.read_tag_value(var_name)
-                                if plc_value is not None:
-                                    current_raw_value = plc_value
-                                    print(f"Button: Read from PLC: {var_name} = {current_raw_value}")
+                                if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
+                                    plc_manager = rect_item.hmi_scene.plc_manager
+                                    if plc_manager:
+                                        try:
+                                            plc_value = plc_manager.read_tag(var_name)
+                                            if plc_value is not None:
+                                                current_raw_value = plc_value
+                                                print(f"Button: Read from PLC: {var_name} = {current_raw_value}")
+                                        except Exception as e:
+                                            print(f"Button: Error reading from PLC: {e}")
                             
                             if current_raw_value is not None:
                                 current_int = int(current_raw_value)
@@ -449,38 +458,59 @@ class HMIButtonRuntime(HMIButton):
                                 print(f"Button: No value available, toggling to {new_value}")
                         else:
                             new_value = not bool(current_value) if current_value is not None else True
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Toggle {var_name} to {new_value}")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will toggle {var_name} to {new_value} after write")
                     elif operation == '置1':
                         new_value = 1
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Set {var_name} to 1")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will set {var_name} to 1 after write")
                     elif operation == '置0':
                         new_value = 0
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Reset {var_name} to 0")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will reset {var_name} to 0 after write")
                     elif operation == '加1':
                         new_value = (current_value + 1) if current_value is not None else 1
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Increment {var_name} to {new_value}")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will increment {var_name} to {new_value} after write")
                     elif operation == '减1':
                         new_value = (current_value - 1) if current_value is not None else -1
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Button: Decrement {var_name} to {new_value}")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Button: Will decrement {var_name} to {new_value} after write")
                     elif operation == '点动':
                         # 点动操作：按下时置位，松开时复位
-                        print(f"Button: Momentary press - setting {var_name} to True")
+                        print(f"Button: Momentary press - setting {var_name} to True, bit_offset={bit_offset}")
                         
+                        # DO NOT update data manager here - it will be updated by read-after-write
                         # 更新本地数据管理器
-                        data_manager.update_tag(var_name, True)
+                        # if bit_offset is not None:
+                        #     # 对于位偏移，只更新该位的值
+                        #     current_value = data_manager.get_tag_value(var_name)
+                        #     if current_value is not None:
+                        #         current_int = int(current_value)
+                        #         new_value = current_int | (1 << int(bit_offset))
+                        #         data_manager.update_tag(var_name, new_value)
+                        #         print(f"Button: Updated bit {bit_offset} to 1 in {var_name}, register: {current_int} -> {new_value}")
+                        # else:
+                        #     data_manager.update_tag(var_name, True)
+                        # else:
+                        #     data_manager.update_tag(var_name, True)
                         
                         # 写入PLC
                         if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
                             plc_manager = rect_item.hmi_scene.plc_manager
                             if plc_manager:
                                 try:
-                                    plc_manager.write_tag(var_name, True)
-                                    print(f"Button: Wrote {var_name} = True to PLC")
+                                    if bit_offset is not None:
+                                        plc_manager.write_tag(var_name, True, bit_offset)
+                                        print(f"Button: Wrote bit {bit_offset} = True to {var_name}")
+                                    else:
+                                        plc_manager.write_tag(var_name, True)
+                                        print(f"Button: Wrote {var_name} = True to PLC")
                                 except Exception as e:
                                     print(f"Button: Error writing to PLC: {e}")
                         
@@ -488,6 +518,7 @@ class HMIButtonRuntime(HMIButton):
                         rect_item._momentary_var_name = var_name
                         rect_item._momentary_active = True
                         rect_item._momentary_data_manager = data_manager
+                        rect_item._momentary_bit_offset = bit_offset
                         
                         new_value = None  # 设置为None以避免后续重复写入
                     else:
@@ -539,17 +570,31 @@ class HMIButtonRuntime(HMIButton):
                 var_name = rect_item._momentary_var_name
                 dm = getattr(rect_item, '_momentary_data_manager', data_manager)
                 
-                # Get bit_offset
-                bit_offset = None
-                if button_obj.variables:
-                    bound_var = button_obj.variables[0]
-                    bit_offset = getattr(bound_var, 'bit_offset', None)
+                # Get bit_offset from stored value or button object
+                bit_offset = getattr(rect_item, '_momentary_bit_offset', None)
+                if bit_offset is None and hasattr(rect_item, 'hmi_object'):
+                    button_obj = rect_item.hmi_object
+                    if button_obj and button_obj.variables:
+                        bound_var = button_obj.variables[0]
+                        bit_offset = getattr(bound_var, 'bit_offset', None)
                 
                 print(f"Button: Momentary release - resetting {var_name} to False, bit_offset={bit_offset}")
                 
-                # 更新本地数据管理器
-                if dm:
-                    dm.update_tag(var_name, False)
+                # DO NOT update data manager here - it will be updated by read-after-write
+                # Updating here would overwrite the full register value
+                # if dm:
+                #     if bit_offset is not None:
+                #         # 对于位偏移，只更新该位的值
+                #         current_value = dm.get_tag_value(var_name)
+                #         if current_value is not None:
+                #             current_int = int(current_value)
+                #             new_value = current_int & ~(1 << int(bit_offset))
+                #             dm.update_tag(var_name, new_value)
+                #             print(f"Button: Updated bit {bit_offset} to 0 in {var_name}, register: {current_int} -> {new_value}")
+                #         else:
+                #             dm.update_tag(var_name, False)
+                #     else:
+                #         dm.update_tag(var_name, False)
                 
                 # 写入 PLC
                 if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
@@ -567,6 +612,8 @@ class HMIButtonRuntime(HMIButton):
                 
                 # 清除标记
                 rect_item._momentary_active = False
+                if hasattr(rect_item, '_momentary_bit_offset'):
+                    delattr(rect_item, '_momentary_bit_offset')
             # 调用父类的事件处理
             QGraphicsRectItem.mouseReleaseEvent(rect_item, event)
         
@@ -579,17 +626,31 @@ class HMIButtonRuntime(HMIButton):
                 var_name = rect_item._momentary_var_name
                 dm = getattr(rect_item, '_momentary_data_manager', data_manager)
                 
-                # Get bit_offset
-                bit_offset = None
-                if button_obj.variables:
-                    bound_var = button_obj.variables[0]
-                    bit_offset = getattr(bound_var, 'bit_offset', None)
+                # Get bit_offset from stored value or button object
+                bit_offset = getattr(rect_item, '_momentary_bit_offset', None)
+                if bit_offset is None and hasattr(rect_item, 'hmi_object'):
+                    button_obj = rect_item.hmi_object
+                    if button_obj and button_obj.variables:
+                        bound_var = button_obj.variables[0]
+                        bit_offset = getattr(bound_var, 'bit_offset', None)
                 
                 print(f"Button: Scene mouse release - resetting {var_name} to False, bit_offset={bit_offset}")
                 
-                # 更新本地数据管理器
-                if dm:
-                    dm.update_tag(var_name, False)
+                # DO NOT update data manager here - it will be updated by read-after-write
+                # Updating here would overwrite the full register value
+                # if dm:
+                #     if bit_offset is not None:
+                #         # 对于位偏移，只更新该位的值
+                #         current_value = dm.get_tag_value(var_name)
+                #         if current_value is not None:
+                #             current_int = int(current_value)
+                #             new_value = current_int & ~(1 << int(bit_offset))
+                #             dm.update_tag(var_name, new_value)
+                #             print(f"Button: Updated bit {bit_offset} to 0 in {var_name}, register: {current_int} -> {new_value}")
+                #         else:
+                #             dm.update_tag(var_name, False)
+                #     else:
+                #         dm.update_tag(var_name, False)
                 
                 # 写入 PLC
                 if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
@@ -604,11 +665,11 @@ class HMIButtonRuntime(HMIButton):
                                 print(f"Button: Wrote {var_name} = False to PLC")
                         except Exception as e:
                             print(f"Button: Error writing to PLC: {e}")
-                        except Exception as e:
-                            print(f"Button: Error writing to PLC: {e}")
                 
                 # 清除标记
                 rect_item._momentary_active = False
+                if hasattr(rect_item, '_momentary_bit_offset'):
+                    delattr(rect_item, '_momentary_bit_offset')
         
         # 存储场景事件处理器引用
         rect_item._scene_mouse_release_handler = scene_mouse_release_handler
@@ -727,9 +788,10 @@ class HMISwitchRuntime(HMISwitch):
             bound_var = self.variables[0]
             value = data_manager.get_tag_value(bound_var.variable_name)
             if value is not None:
-                # Handle bit offset if specified
+                # Only apply bit offset if value is still numeric (not already extracted)
+                # Data poller already extracts bit values, so we only handle this if needed
                 bit_offset = getattr(bound_var, 'bit_offset', None)
-                if bit_offset is not None and isinstance(value, (int, float)):
+                if bit_offset is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
                     value = (int(value) >> int(bit_offset)) & 1
                 
                 if isinstance(value, bool):
@@ -784,7 +846,6 @@ class HMISwitchRuntime(HMISwitch):
                     try:
                         # Read current raw value from data manager
                         current_raw_value = dm.get_tag_value(var_name)
-                        print(f"Switch: Read {var_name} = {current_raw_value}, bit_offset={bit_offset}")
                         
                         # Extract bit value if bit_offset is specified
                         if bit_offset is not None:
@@ -792,28 +853,26 @@ class HMISwitchRuntime(HMISwitch):
                             # If current value is boolean or we don't have a value, read from PLC
                             if current_raw_value is None or isinstance(current_raw_value, bool):
                                 # Read latest value from PLC
-                                plc_value = dm.read_tag_value(var_name)
-                                if plc_value is not None:
-                                    current_raw_value = plc_value
-                                    print(f"Switch: Read from PLC: {var_name} = {current_raw_value}")
+                                if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
+                                    plc_manager = rect_item.hmi_scene.plc_manager
+                                    if plc_manager:
+                                        try:
+                                            plc_value = plc_manager.read_tag(var_name)
+                                            if plc_value is not None:
+                                                current_raw_value = plc_value
+                                        except Exception:
+                                            pass
                             
                             if current_raw_value is not None:
                                 current_bit = (int(current_raw_value) >> int(bit_offset)) & 1
                                 current_value = bool(current_bit)
-                                print(f"Switch: Extracted bit {bit_offset} = {current_bit} from {current_raw_value}")
                             else:
                                 current_value = False
-                                print(f"Switch: No value available, using False")
                         else:
                             current_value = bool(current_raw_value) if current_raw_value is not None else False
-                            print(f"Switch: Using value = {current_value}")
                         
                         # Toggle the state
                         new_value = not current_value
-                        
-                        # Update data manager
-                        dm.update_tag(var_name, new_value)
-                        print(f"Switch: Toggled {var_name} bit {bit_offset} from {current_value} to {new_value}")
                         
                         # Write to PLC with bit_offset if specified
                         if hasattr(rect_item, 'hmi_scene') and hasattr(rect_item.hmi_scene, 'plc_manager'):
@@ -823,14 +882,12 @@ class HMISwitchRuntime(HMISwitch):
                                     if bit_offset is not None:
                                         # For bit offset, we need to read-modify-write
                                         plc_manager.write_tag(var_name, new_value, bit_offset)
-                                        print(f"Switch: Wrote bit {bit_offset} = {new_value} to {var_name}")
                                     else:
                                         plc_manager.write_tag(var_name, new_value)
-                                        print(f"Switch: Wrote {var_name} = {new_value} to PLC")
-                                except Exception as e:
-                                    print(f"Switch: Error writing to PLC: {e}")
-                    except Exception as e:
-                        print(f"Switch: Error toggling variable {var_name}: {e}")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
             
             rect_item.mousePressEvent = mouse_press_handler
         
@@ -848,9 +905,10 @@ class HMILightRuntime(HMILight):
             bound_var = self.variables[0]
             value = data_manager.get_tag_value(bound_var.variable_name)
             if value is not None:
-                # Handle bit offset if specified
+                # Only apply bit offset if value is still numeric (not already extracted)
+                # Data poller already extracts bit values, so we only handle this if needed
                 bit_offset = getattr(bound_var, 'bit_offset', None)
-                if bit_offset is not None and isinstance(value, (int, float)):
+                if bit_offset is not None and isinstance(value, (int, float)) and not isinstance(value, bool):
                     # Extract bit value
                     value = (int(value) >> int(bit_offset)) & 1
                 
@@ -2588,8 +2646,9 @@ class HMIInputFieldRuntime(HMIInputField):
 
                     if ok:
                         try:
-                            dm.update_tag(var_name, new_value)
-                            print(f"InputField: Updated {var_name} to {new_value}")
+                            # DO NOT update data manager here - it will be updated by read-after-write
+                            # dm.update_tag(var_name, new_value)
+                            print(f"InputField: Will update {var_name} to {new_value} after write")
                             
                             # 写入PLC
                             if hasattr(bg_item, 'hmi_scene') and hasattr(bg_item.hmi_scene, 'plc_manager'):
@@ -2616,9 +2675,10 @@ class HMICheckBoxRuntime(HMICheckBox):
             bound_var = self.variables[0]
             var_value = data_manager.get_tag_value(bound_var.variable_name)
             if var_value is not None:
-                # Handle bit offset if specified
+                # Only apply bit offset if value is still numeric (not already extracted)
+                # Data poller already extracts bit values, so we only handle this if needed
                 bit_offset = getattr(bound_var, 'bit_offset', None)
-                if bit_offset is not None and isinstance(var_value, (int, float)):
+                if bit_offset is not None and isinstance(var_value, (int, float)) and not isinstance(var_value, bool):
                     var_value = (int(var_value) >> int(bit_offset)) & 1
                 checked = bool(var_value)
         
@@ -2679,9 +2739,16 @@ class HMICheckBoxRuntime(HMICheckBox):
                         # Extract bit value if bit_offset is specified
                         if bit_offset is not None:
                             if current_raw_value is None or isinstance(current_raw_value, bool):
-                                plc_value = dm.read_tag_value(var_name)
-                                if plc_value is not None:
-                                    current_raw_value = plc_value
+                                # Read latest value from PLC
+                                if hasattr(box_item, 'hmi_scene') and hasattr(box_item.hmi_scene, 'plc_manager'):
+                                    plc_manager = box_item.hmi_scene.plc_manager
+                                    if plc_manager:
+                                        try:
+                                            plc_value = plc_manager.read_tag(var_name)
+                                            if plc_value is not None:
+                                                current_raw_value = plc_value
+                                        except Exception as e:
+                                            print(f"CheckBox: Error reading from PLC: {e}")
                             
                             if current_raw_value is not None:
                                 current_bit = (int(current_raw_value) >> int(bit_offset)) & 1
@@ -2692,7 +2759,9 @@ class HMICheckBoxRuntime(HMICheckBox):
                             current_value = bool(current_raw_value) if current_raw_value is not None else False
                         
                         new_value = not current_value
-                        dm.update_tag(var_name, new_value)
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # Updating here with boolean value would overwrite the full register value
+                        # dm.update_tag(var_name, new_value)
                         print(f"CheckBox: Toggled {var_name} bit {bit_offset} to {new_value}")
                         
                         # Write to PLC
@@ -2755,9 +2824,10 @@ class HMIDropdownRuntime(HMIDropdown):
             var_name = bound_var.variable_name
             try:
                 current_val = data_manager.get_tag_value(var_name)
-                # Handle bit offset if specified
+                # Only apply bit offset if value is still numeric (not already extracted)
+                # Data poller already extracts bit values, so we only handle this if needed
                 bit_offset = getattr(bound_var, 'bit_offset', None)
-                if bit_offset is not None and isinstance(current_val, (int, float)):
+                if bit_offset is not None and isinstance(current_val, (int, float)) and not isinstance(current_val, bool):
                     current_val = (int(current_val) >> int(bit_offset)) & 1
             except:
                 current_val = None
@@ -2902,8 +2972,9 @@ class HMIDropdownRuntime(HMIDropdown):
                         var_name = bound_var.variable_name
                         bit_offset = getattr(bound_var, 'bit_offset', None)
                         
-                        data_manager.update_tag(var_name, new_value)
-                        print(f"Dropdown: Selected {var_name} = {new_value}, bit_offset={bit_offset}")
+                        # DO NOT update data manager here - it will be updated by read-after-write
+                        # data_manager.update_tag(var_name, new_value)
+                        print(f"Dropdown: Will select {var_name} = {new_value} after write, bit_offset={bit_offset}")
                         
                         # Write to PLC with bit_offset if specified
                         if hasattr(proxy, 'hmi_scene') and hasattr(proxy.hmi_scene, 'plc_manager'):
@@ -3147,8 +3218,9 @@ class HMITextListRuntime(HMITextList):
                             value_to_write = str(clicked_idx)
                         
                         try:
-                            dm.update_tag(var_name, value_to_write)
-                            print(f"TextList: Set {var_name} to {value_to_write}")
+                            # DO NOT update data manager here - it will be updated by read-after-write
+                            # dm.update_tag(var_name, value_to_write)
+                            print(f"TextList: Will set {var_name} to {value_to_write} after write")
                         except Exception as e:
                             print(f"TextList: Error updating {var_name}: {e}")
             

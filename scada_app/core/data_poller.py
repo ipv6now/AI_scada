@@ -4,6 +4,7 @@ Data Poller - Synchronizes data between PLCs and DataManager
 Optimized for on-demand polling: only polls active tags (HMI, Alarm, Log)
 """
 import time
+import threading
 from threading import Thread, Event
 from PyQt5.QtCore import QTimer
 from datetime import datetime
@@ -19,11 +20,22 @@ class DataPoller:
         self.polling_active = False
         self.polling_thread = None
         self.stop_event = Event()
-        self.poll_interval = 1000  # milliseconds
+        self.poll_interval = 500  # milliseconds (reduced from 1000ms for faster reconnect)
         
         # Track active tags for on-demand polling
         self._active_tags: set = set()
         self._subscription_callback = None
+        
+        # Track recently written tags to prevent flickering
+        self._recent_writes: dict = {}  # tag_name -> timestamp
+        self._write_lock = threading.Lock()
+        self._write_protect_duration = 0.2  # 200ms protection after write
+        
+        # Track read failures for each tag
+        self._read_failures: dict = {}  # tag_name -> (first_failure_time, last_failure_time, failure_count)
+        self._failure_lock = threading.Lock()
+        self._failure_timeout = 10  # seconds - after this time, show error indicator
+        self._error_indicator = "👿"  # Error indicator for failed reads
         
         # Register for subscription changes
         self._register_subscription_callback()
@@ -43,6 +55,71 @@ class DataPoller:
         """Unregister from subscription manager"""
         if self._subscription_callback:
             tag_subscription_manager.unregister_callback(self._subscription_callback)
+    
+    def mark_recent_write(self, tag_name: str):
+        """Mark a tag as recently written to prevent polling from overwriting it"""
+        with self._write_lock:
+            self._recent_writes[tag_name] = time.time()
+    
+    def _is_recently_written(self, tag_name: str) -> bool:
+        """Check if a tag was recently written (within protection duration)"""
+        with self._write_lock:
+            if tag_name in self._recent_writes:
+                elapsed = time.time() - self._recent_writes[tag_name]
+                if elapsed < self._write_protect_duration:
+                    return True
+                else:
+                    # Remove expired entry
+                    del self._recent_writes[tag_name]
+            return False
+    
+    def _record_read_failure(self, tag_name: str):
+        """Record a read failure for a tag"""
+        with self._failure_lock:
+            current_time = time.time()
+            if tag_name in self._read_failures:
+                first_time, last_time, count = self._read_failures[tag_name]
+                self._read_failures[tag_name] = (first_time, current_time, count + 1)
+            else:
+                self._read_failures[tag_name] = (current_time, current_time, 1)
+                print(f"[DataPoller] First read failure for tag: {tag_name}")
+    
+    def _record_read_success(self, tag_name: str):
+        """Clear read failure record when read succeeds"""
+        with self._failure_lock:
+            if tag_name in self._read_failures:
+                del self._read_failures[tag_name]
+                print(f"[DataPoller] Read succeeded for tag: {tag_name}, cleared failure record")
+    
+    def _check_failure_timeout(self, tag_name: str) -> bool:
+        """Check if a tag has been failing for longer than the timeout"""
+        with self._failure_lock:
+            if tag_name in self._read_failures:
+                first_time, last_time, count = self._read_failures[tag_name]
+                elapsed = time.time() - first_time
+                if elapsed >= self._failure_timeout:
+                    return True
+            return False
+    
+    def _update_failed_tags(self):
+        """Update tags that have been failing for too long with error indicator"""
+        with self._failure_lock:
+            current_time = time.time()
+            for tag_name, (first_time, last_time, count) in list(self._read_failures.items()):
+                elapsed = current_time - first_time
+                if elapsed >= self._failure_timeout:
+                    # Update the tag value with error indicator
+                    if tag_name in self.data_manager.tags:
+                        tag = self.data_manager.tags[tag_name]
+                        if tag.value != self._error_indicator:
+                            print(f"[DataPoller] Tag {tag_name} read failed for {elapsed:.1f}s, setting error indicator 👿")
+                            self.data_manager.update_tag_value(tag_name, self._error_indicator, quality="BAD")
+                    else:
+                        print(f"[DataPoller] Tag {tag_name} not found in data_manager.tags")
+                else:
+                    # Debug: print progress towards timeout
+                    if int(elapsed) % 2 == 0 and int(elapsed) > 0:  # Print every 2 seconds
+                        print(f"[DataPoller] Tag {tag_name} read failed for {elapsed:.1f}s, will show 👿 in {self._failure_timeout - elapsed:.1f}s")
         
     def start_polling(self):
         """Start the polling thread"""
@@ -97,6 +174,9 @@ class DataPoller:
         if not active_tags:
             return
         
+        # Update tags that have been failing for too long
+        self._update_failed_tags()
+        
         # Group active tags by PLC connection for batch reading
         tags_by_plc = {}
         for tag_name in active_tags:
@@ -110,52 +190,140 @@ class DataPoller:
         # Batch read for each PLC connection
         for plc_name, tag_list in tags_by_plc.items():
             plc_conn = self.plc_manager.get_connection(plc_name)
-            if plc_conn and plc_conn.connected:
-                try:
-                    # Check if handler supports batch read
-                    if hasattr(plc_conn, 'handler') and plc_conn.handler and \
-                       hasattr(plc_conn.handler, 'read_tags_batch'):
-                        # Use batch read with data type information
-                        # Build list of (address, data_type) tuples
-                        address_type_list = []
-                        seen_addresses = set()  # Track unique addresses to avoid duplicates
-                        for _, tag in tag_list:
-                            if tag.address:
-                                # Address is already normalized to uppercase in Tag class
-                                if tag.address not in seen_addresses:
-                                    seen_addresses.add(tag.address)
-                                    # Get data type from tag, default to REAL for DBD addresses
-                                    data_type = "REAL" if hasattr(tag, 'data_type') and tag.data_type and tag.data_type.name == "REAL" else "DWORD"
-                                    address_type_list.append((tag.address, data_type))
-                        
-                        if address_type_list:
-                            results = plc_conn.handler.read_tags_batch(address_type_list)
-                            # Update values in data manager
-                            for tag_name, tag in tag_list:
-                                if tag.address in results:
-                                    value = results[tag.address]
-                                    if value is not None:
-                                        self.data_manager.update_tag_value(tag_name, value)
-                    else:
-                        # Fall back to individual reads
+            if not plc_conn or not plc_conn.connected:
+                # PLC not connected, record failures for all tags
+                for tag_name, tag in tag_list:
+                    self._record_read_failure(tag_name)
+                continue
+            
+            try:
+                # Check if handler supports batch read
+                if hasattr(plc_conn, 'handler') and plc_conn.handler and \
+                   hasattr(plc_conn.handler, 'read_tags_batch'):
+                    # Use batch read with data type information
+                    # Build list of (address, data_type) tuples
+                    address_type_list = []
+                    seen_addresses = set()  # Track unique addresses to avoid duplicates
+                    for _, tag in tag_list:
+                        if tag.address:
+                            # Address is already normalized to uppercase in Tag class
+                            if tag.address not in seen_addresses:
+                                seen_addresses.add(tag.address)
+                                # Get data type from tag, default to REAL for DBD addresses
+                                data_type = "REAL" if hasattr(tag, 'data_type') and tag.data_type and tag.data_type.name == "REAL" else "DWORD"
+                                address_type_list.append((tag.address, data_type))
+                    
+                    if address_type_list:
+                        results = plc_conn.handler.read_tags_batch(address_type_list)
+                        # Update values in data manager
                         for tag_name, tag in tag_list:
-                            try:
-                                value = self._read_from_plc(plc_conn, tag)
+                            # Skip recently written tags to prevent flickering
+                            if self._is_recently_written(tag_name):
+                                continue
+                            if tag.address in results:
+                                value = results[tag.address]
                                 if value is not None:
+                                    # Always update with full register value
+                                    # DO NOT extract bit value here - Tag.value must store complete register value
+                                    # Bit extraction is done at control level (in HMI controls)
                                     self.data_manager.update_tag_value(tag_name, value)
-                            except Exception as e:
-                                plc_conn_name = getattr(plc_conn, 'name', 'Unknown')
-                                print(f"Error reading tag {tag_name} from PLC {plc_conn_name}: {str(e)}")
-                except Exception as e:
-                    print(f"Error in batch read from PLC {plc_name}: {str(e)}")
+                                    # Clear failure record on successful read
+                                    self._record_read_success(tag_name)
+                                else:
+                                    # Record failure when value is None
+                                    self._record_read_failure(tag_name)
+                            else:
+                                # Record failure when address not in results
+                                self._record_read_failure(tag_name)
+                else:
                     # Fall back to individual reads
                     for tag_name, tag in tag_list:
+                        # Skip recently written tags to prevent flickering
+                        if self._is_recently_written(tag_name):
+                            continue
+                        try:
+                            value = self._read_from_plc(plc_conn, tag)
+                            if value is not None:
+                                # Always update with full register value
+                                # DO NOT extract bit value here - Tag.value must store complete register value
+                                # Bit extraction is done at control level (in HMI controls)
+                                self.data_manager.update_tag_value(tag_name, value)
+                                # Clear failure record on successful read
+                                self._record_read_success(tag_name)
+                            else:
+                                # Record failure when value is None
+                                self._record_read_failure(tag_name)
+                        except Exception as e:
+                            plc_conn_name = getattr(plc_conn, 'name', 'Unknown')
+                            print(f"Error reading tag {tag_name} from PLC {plc_conn_name}: {str(e)}")
+                            # Record read failure
+                            self._record_read_failure(tag_name)
+                            
+                            # Check if this is a connection error and attempt to reconnect
+                            if "connection" in str(e).lower() or "timeout" in str(e).lower() or "reset" in str(e).lower():
+                                print(f"Attempting to reconnect to {plc_conn_name}...")
+                                try:
+                                    if hasattr(plc_conn, 'connect'):
+                                        # Force reconnection with cleanup
+                                        if hasattr(plc_conn, 'disconnect'):
+                                            plc_conn.disconnect()
+                                        if plc_conn.connect(max_retries=3, retry_delay=1.0):
+                                            print(f"Successfully reconnected to {plc_conn_name}")
+                                        else:
+                                            print(f"Failed to reconnect to {plc_conn_name}")
+                                except Exception as reconnect_error:
+                                    print(f"Error during reconnection to {plc_conn_name}: {reconnect_error}")
+            except Exception as e:
+                    print(f"Error in batch read from PLC {plc_name}: {str(e)}")
+                    
+                    # Check if this is a connection error and attempt to reconnect
+                    if "connection" in str(e).lower() or "timeout" in str(e).lower() or "reset" in str(e).lower():
+                        print(f"Attempting to reconnect to {plc_name}...")
+                        try:
+                            if hasattr(plc_conn, 'connect'):
+                                # Force reconnection with cleanup
+                                if hasattr(plc_conn, 'disconnect'):
+                                    plc_conn.disconnect()
+                                if plc_conn.connect(max_retries=3, retry_delay=1.0):
+                                    print(f"Successfully reconnected to {plc_name}")
+                                else:
+                                    print(f"Failed to reconnect to {plc_name}")
+                        except Exception as reconnect_error:
+                            print(f"Error during reconnection to {plc_name}: {reconnect_error}")
+                    
+                    # Fall back to individual reads
+                    for tag_name, tag in tag_list:
+                        # Skip recently written tags to prevent flickering
+                        if self._is_recently_written(tag_name):
+                            continue
                         try:
                             value = self._read_from_plc(plc_conn, tag)
                             if value is not None:
                                 self.data_manager.update_tag_value(tag_name, value)
+                                # Clear failure record on successful read
+                                self._record_read_success(tag_name)
+                            else:
+                                # Record failure when value is None
+                                self._record_read_failure(tag_name)
                         except Exception as e2:
                             print(f"Error reading tag {tag_name}: {str(e2)}")
+                            # Record read failure
+                            self._record_read_failure(tag_name)
+                            
+                            # Check if this is a connection error and attempt to reconnect
+                            if "connection" in str(e2).lower() or "timeout" in str(e2).lower() or "reset" in str(e2).lower():
+                                print(f"Attempting to reconnect to {plc_name}...")
+                                try:
+                                    if hasattr(plc_conn, 'connect'):
+                                        # Force reconnection with cleanup
+                                        if hasattr(plc_conn, 'disconnect'):
+                                            plc_conn.disconnect()
+                                        if plc_conn.connect(max_retries=3, retry_delay=1.0):
+                                            print(f"Successfully reconnected to {plc_name}")
+                                        else:
+                                            print(f"Failed to reconnect to {plc_name}")
+                                except Exception as reconnect_error:
+                                    print(f"Error during reconnection to {plc_name}: {reconnect_error}")
                         
     def _read_from_plc(self, plc_conn, tag):
         """Read a value from PLC based on tag configuration"""
