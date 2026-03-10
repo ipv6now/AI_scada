@@ -1941,7 +1941,13 @@ class HMIAlarmDisplay(HMIObject):
             'background_color': '#FFFFFF',
             'header_color': '#333333',
             'alarm_color': '#FF4444',
-            'warning_color': '#FFAA00'
+            'warning_color': '#FFAA00',
+            # 高级属性
+            'visible_alarm_types': ['危急', '高', '中', '低', '信息', '警告', '错误'],
+            'max_display_count': 50,
+            'auto_scroll': True,
+            'show_timestamp': True,
+            'show_alarm_type': True
         }
     
     def draw(self, scene):
@@ -3840,6 +3846,96 @@ class HMIDesigner(QDialog):
         self.picture_list_group.setLayout(picture_list_layout)
         self.picture_list_group.setMaximumHeight(250)
         self.adv_splitter.addWidget(self.picture_list_group)
+        
+        # === Group 8: Alarm Display Properties ===
+        self.alarm_display_group = QGroupBox("报警显示设置")
+        alarm_display_layout = QVBoxLayout()
+        alarm_display_layout.setSpacing(5)
+        alarm_display_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Display settings
+        display_settings_layout = QHBoxLayout()
+        
+        display_settings_layout.addWidget(QLabel("最大显示数量:"))
+        self.alarm_max_count_spin = QSpinBox()
+        self.alarm_max_count_spin.setRange(1, 200)
+        self.alarm_max_count_spin.setValue(50)
+        self.alarm_max_count_spin.valueChanged.connect(self.on_property_change)
+        display_settings_layout.addWidget(self.alarm_max_count_spin)
+        
+        display_settings_layout.addStretch()
+        alarm_display_layout.addLayout(display_settings_layout)
+        
+        # Checkbox options
+        checkbox_layout = QHBoxLayout()
+        
+        self.alarm_auto_scroll_checkbox = QCheckBox("自动滚动")
+        self.alarm_auto_scroll_checkbox.setChecked(True)
+        self.alarm_auto_scroll_checkbox.stateChanged.connect(self.on_property_change)
+        checkbox_layout.addWidget(self.alarm_auto_scroll_checkbox)
+        
+        self.alarm_show_timestamp_checkbox = QCheckBox("显示时间戳")
+        self.alarm_show_timestamp_checkbox.setChecked(True)
+        self.alarm_show_timestamp_checkbox.stateChanged.connect(self.on_property_change)
+        checkbox_layout.addWidget(self.alarm_show_timestamp_checkbox)
+        
+        self.alarm_show_type_checkbox = QCheckBox("显示报警类型")
+        self.alarm_show_type_checkbox.setChecked(True)
+        self.alarm_show_type_checkbox.stateChanged.connect(self.on_property_change)
+        checkbox_layout.addWidget(self.alarm_show_type_checkbox)
+        
+        checkbox_layout.addStretch()
+        alarm_display_layout.addLayout(checkbox_layout)
+        
+        # Visible alarm types
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("显示报警类型:"))
+        type_layout.addStretch()
+        
+        self.alarm_select_all_btn = QPushButton("全选")
+        self.alarm_select_all_btn.setFixedWidth(50)
+        self.alarm_select_all_btn.clicked.connect(self.select_all_alarm_types)
+        type_layout.addWidget(self.alarm_select_all_btn)
+        
+        self.alarm_select_none_btn = QPushButton("全不选")
+        self.alarm_select_none_btn.setFixedWidth(50)
+        self.alarm_select_none_btn.clicked.connect(self.select_no_alarm_types)
+        type_layout.addWidget(self.alarm_select_none_btn)
+        
+        alarm_display_layout.addLayout(type_layout)
+        
+        # Alarm type checkboxes
+        self.alarm_type_checkboxes = {}
+        alarm_types_layout = QVBoxLayout()
+        
+        # Get alarm types from alarm type manager
+        try:
+            from scada_app.core.alarm_type_manager import alarm_type_manager
+            alarm_type_names = alarm_type_manager.get_alarm_type_names()
+            
+            for type_name in alarm_type_names:
+                checkbox = QCheckBox(type_name)
+                checkbox.setChecked(True)
+                checkbox.stateChanged.connect(self.on_property_change)
+                self.alarm_type_checkboxes[type_name] = checkbox
+                alarm_types_layout.addWidget(checkbox)
+        except Exception as e:
+            print(f"Warning: Could not load alarm types: {e}")
+            # Fallback to default types
+            default_types = ['危急', '高', '中', '低', '信息', '警告', '错误']
+            for type_name in default_types:
+                checkbox = QCheckBox(type_name)
+                checkbox.setChecked(True)
+                checkbox.stateChanged.connect(self.on_property_change)
+                self.alarm_type_checkboxes[type_name] = checkbox
+                alarm_types_layout.addWidget(checkbox)
+        
+        alarm_types_layout.addStretch()
+        alarm_display_layout.addLayout(alarm_types_layout)
+        
+        self.alarm_display_group.setLayout(alarm_display_layout)
+        self.alarm_display_group.setMaximumHeight(250)
+        self.adv_splitter.addWidget(self.alarm_display_group)
 
         # === Group 8: Progress Bar Properties ===
         self.progress_group = QGroupBox("进度条属性")
@@ -6351,6 +6447,20 @@ class HMIDesigner(QDialog):
                     obj.properties['title'] = self.htrend_title_edit.text()
                     obj.properties['title_visible'] = self.htrend_title_visible_checkbox.isChecked()
                     obj.properties['title_font_size'] = self.htrend_title_font_spin.value()
+                
+                # Handle alarm display properties
+                if obj.obj_type == 'alarm_display':
+                    obj.properties['max_display_count'] = self.alarm_max_count_spin.value()
+                    obj.properties['auto_scroll'] = self.alarm_auto_scroll_checkbox.isChecked()
+                    obj.properties['show_timestamp'] = self.alarm_show_timestamp_checkbox.isChecked()
+                    obj.properties['show_alarm_type'] = self.alarm_show_type_checkbox.isChecked()
+                    
+                    # Get visible alarm types from checkboxes
+                    visible_types = []
+                    for type_name, checkbox in self.alarm_type_checkboxes.items():
+                        if checkbox.isChecked():
+                            visible_types.append(type_name)
+                    obj.properties['visible_alarm_types'] = visible_types
                     obj.properties['control_font_size'] = self.htrend_control_font_spin.value()
                     obj.properties['y_min'] = self.htrend_y_min_spin.value()
                     obj.properties['y_max'] = self.htrend_y_max_spin.value()
@@ -7051,6 +7161,18 @@ class HMIDesigner(QDialog):
         self.selected_object.variables = [
             vb for vb in self.selected_object.variables if vb.variable_name != var_name
         ]
+    
+    def select_all_alarm_types(self):
+        """Select all alarm types"""
+        for checkbox in self.alarm_type_checkboxes.values():
+            checkbox.setChecked(True)
+        self.on_property_change()
+    
+    def select_no_alarm_types(self):
+        """Select no alarm types"""
+        for checkbox in self.alarm_type_checkboxes.values():
+            checkbox.setChecked(False)
+        self.on_property_change()
         
         self.update_trend_vars_list()
         self.save_state()

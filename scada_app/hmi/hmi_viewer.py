@@ -3002,35 +3002,65 @@ class HMIDropdownRuntime(HMIDropdown):
 
 
 class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
+    def __init__(self):
+        super().__init__()
+        self.alarm_widget = None
+        
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the alarm display in runtime mode"""
-        # Draw background
-        bg_item = QGraphicsRectItem(self.x, self.y, self.width, self.height)
-        bg_item.setBrush(QBrush(QColor("#FFFFFF")))
-        pen = QPen(Qt.black)
-        pen.setWidth(1)
-        bg_item.setPen(pen)
-        scene.addItem(bg_item)
-        
-        # Draw title
-        title_text = QGraphicsTextItem("报警显示")
-        title_text.setDefaultTextColor(Qt.black)
-        font = QFont()
-        font.setPointSize(10)
-        font.setBold(True)
-        title_text.setFont(font)
-        title_text.setPos(self.x + 5, self.y + 5)
-        scene.addItem(title_text)
-        
-        # Draw alarm list placeholder
-        # In a real implementation, this would show actual alarms from an alarm manager
-        alarm_placeholder = QGraphicsTextItem("[报警列表]")
-        alarm_placeholder.setDefaultTextColor(Qt.gray)
-        font = QFont()
-        font.setPointSize(9)
-        alarm_placeholder.setFont(font)
-        alarm_placeholder.setPos(self.x + 5, self.y + 30)
-        scene.addItem(alarm_placeholder)
+        try:
+            # 检查控件是否仍然存在，如果不存在则重新创建
+            if self.alarm_widget is None or not hasattr(self.alarm_widget, 'refresh_alarms'):
+                from scada_app.hmi.alarm_display_widget import AlarmDisplayWidget
+                
+                # 创建报警显示控件
+                self.alarm_widget = AlarmDisplayWidget()
+                
+                # 设置数据管理器
+                if data_manager:
+                    self.alarm_widget.set_data_manager(data_manager)
+                
+                # 设置系统服务管理器（从主窗口获取）
+                if parent_widget:
+                    main_window = parent_widget.window()
+                    if hasattr(main_window, 'system_service_manager'):
+                        self.alarm_widget.set_system_service_manager(main_window.system_service_manager)
+                
+                # 应用配置
+                config = {
+                    'visible_alarm_types': self.properties.get('visible_alarm_types', ['危急', '高', '中', '低', '信息', '警告', '错误']),
+                    'max_display_count': self.properties.get('max_display_count', 50),
+                    'auto_scroll': self.properties.get('auto_scroll', True),
+                    'show_timestamp': self.properties.get('show_timestamp', True),
+                    'show_alarm_type': self.properties.get('show_alarm_type', True),
+                    'show_alarm_id': self.properties.get('show_alarm_id', True)
+                }
+                self.alarm_widget.apply_config(config)
+                
+                # 添加到场景
+                proxy_widget = scene.addWidget(self.alarm_widget)
+                proxy_widget.setPos(self.x, self.y)
+                
+                # 设置控件几何属性
+                self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
+            else:
+                # 更新控件位置和大小
+                self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
+                
+            # 刷新报警显示
+            if self.alarm_widget and hasattr(self.alarm_widget, 'refresh_alarms'):
+                self.alarm_widget.refresh_alarms()
+                
+        except RuntimeError as e:
+            # 如果对象已被删除，重置并重新创建
+            if "has been deleted" in str(e):
+                print(f"[DEBUG] AlarmDisplayWidget已被删除，重新创建: {e}")
+                self.alarm_widget = None
+                # 递归调用以重新创建控件
+                self.draw_runtime(scene, data_manager, parent_widget)
+            else:
+                # 其他错误，重新抛出
+                raise e
 
 
 class HMITextAreaRuntime(HMITextArea):

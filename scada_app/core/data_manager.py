@@ -194,6 +194,7 @@ class DataManager:
                     active BOOLEAN,
                     acknowledged BOOLEAN,
                     priority TEXT,
+                    alarm_type_name TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -310,14 +311,14 @@ class DataManager:
         finally:
             self._return_connection(conn)
         
-    def raise_alarm(self, tag_name, alarm_type, message, priority="MEDIUM"):
+    def raise_alarm(self, tag_name, alarm_type, message, alarm_type_name="中"):
         alarm = {
             'tag_name': tag_name,
             'alarm_type': alarm_type,
             'message': message,
             'active': True,
             'acknowledged': False,
-            'priority': priority,
+            'alarm_type_name': alarm_type_name,  # 改为报警类型名称
             'timestamp': datetime.now()
         }
         
@@ -327,9 +328,9 @@ class DataManager:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (tag_name, alarm_type, message, True, False, priority))
+                INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority, alarm_type_name, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (tag_name, alarm_type, message, True, False, alarm_type_name, alarm_type_name, datetime.now()))
             conn.commit()
         finally:
             self._return_connection(conn)

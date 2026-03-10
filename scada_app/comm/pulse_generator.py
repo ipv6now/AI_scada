@@ -174,9 +174,9 @@ if __name__ == "__main__":
         def __init__(self):
             self.tags = {}
         
-        def write_tag(self, tag_name, value):
+        def write_tag(self, tag_name, value, bit_offset=None):
             self.tags[tag_name] = value
-            print(f"MockPLC: Writing {tag_name} = {value}")
+            print(f"MockPLC: Writing {tag_name} = {value}, bit_offset={bit_offset}")
     
     plc = MockPLCManager()
     

@@ -8,15 +8,22 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
 from PyQt5.QtCore import Qt, QSortFilterProxyModel, QDateTime, QTimer
 from PyQt5.QtGui import QColor, QFont
 from datetime import datetime
+from scada_app.core.alarm_type_manager import alarm_type_manager
 
 
 class AlarmViewerDialog(QDialog):
     """Dialog for viewing and managing alarms"""
-    def __init__(self, parent=None, data_manager=None):
+    def __init__(self, parent=None, data_manager=None, system_service_manager=None):
         super().__init__(parent)
         self.data_manager = data_manager
+        self.system_service_manager = system_service_manager
         self.setWindowTitle("报警监控")
         self.setGeometry(200, 200, 1000, 700)
+        
+        # 设置为无模态窗口，允许同时操作主窗口
+        self.setModal(False)
+        # 设置窗口标志，允许最小化和关闭
+        self.setWindowFlags(Qt.Window)
         
         self.init_ui()
         self.start_refresh_timer()
@@ -28,14 +35,16 @@ class AlarmViewerDialog(QDialog):
         # Header with filters
         filter_layout = QHBoxLayout()
         
-        # Priority filter
-        priority_label = QLabel("优先级:")
-        filter_layout.addWidget(priority_label)
+        # 报警类型筛选器
+        alarm_type_label = QLabel("报警类型:")
+        filter_layout.addWidget(alarm_type_label)
         
-        self.priority_combo = QComboBox()
-        self.priority_combo.addItems(["全部", "低", "中", "高", "危急"])
-        self.priority_combo.currentTextChanged.connect(self.filter_alarms)
-        filter_layout.addWidget(self.priority_combo)
+        self.alarm_type_combo = QComboBox()
+        # 获取所有启用的报警类型
+        alarm_type_names = ["全部"] + alarm_type_manager.get_alarm_type_names()
+        self.alarm_type_combo.addItems(alarm_type_names)
+        self.alarm_type_combo.currentTextChanged.connect(self.filter_alarms)
+        filter_layout.addWidget(self.alarm_type_combo)
         
         # Status filter
         status_label = QLabel("状态:")
@@ -77,8 +86,8 @@ class AlarmViewerDialog(QDialog):
         
         # Alarm table
         self.alarm_table = QTableWidget()
-        self.alarm_table.setColumnCount(6)
-        self.alarm_table.setHorizontalHeaderLabels(["标签", "类型", "消息", "优先级", "状态", "时间戳"])
+        self.alarm_table.setColumnCount(8)
+        self.alarm_table.setHorizontalHeaderLabels(["报警ID", "标签", "类型", "消息", "报警类型", "状态", "触发时间", "恢复时间"])
         self.alarm_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.alarm_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.alarm_table.itemClicked.connect(self.on_alarm_selected)
@@ -130,7 +139,7 @@ class AlarmViewerDialog(QDialog):
     
     def refresh_alarms(self):
         """Refresh the alarm list"""
-        if not self.data_manager:
+        if not self.data_manager and not self.system_service_manager:
             return
         
         # Update status
@@ -139,8 +148,61 @@ class AlarmViewerDialog(QDialog):
         # Clear current table
         self.alarm_table.setRowCount(0)
         
-        # Get all alarms
-        alarms = self.data_manager.alarms
+        # Get all alarms from system service manager if available
+        alarms = []
+        if self.system_service_manager:
+            try:
+                # 获取所有报警历史，包括已恢复的报警
+                all_alarms = self.system_service_manager.get_alarm_history(limit=200)  # 获取最近200条报警
+                for alarm_state in all_alarms:
+                    # 直接使用报警状态中的alarm_id，无需复杂匹配
+                    alarm_id = alarm_state.alarm_id
+                    
+                    alarm = {
+                        'tag_name': alarm_state.tag_name,
+                        'alarm_type': alarm_state.alarm_type,
+                        'message': alarm_state.message,
+                        'priority': alarm_state.alarm_type_name,  # 使用alarm_type_name
+                        'alarm_type_name': alarm_state.alarm_type_name,  # 添加alarm_type_name字段
+                        'status': "已恢复" if alarm_state.status.name == 'RECOVERED' else \
+                                 "已确认" if alarm_state.status.name == 'ACKNOWLEDGED' else "活动",
+                        'acknowledged': alarm_state.status.name == 'ACKNOWLEDGED',
+                        'recovered': alarm_state.status.name == 'RECOVERED',
+                        'timestamp': alarm_state.first_trigger_time,
+                        'recovery_time': alarm_state.recover_time,
+                        'alarm_id': alarm_id
+                    }
+                    alarms.append(alarm)
+                print(f"[ALARM VIEWER] 从系统服务管理器获取 {len(all_alarms)} 条报警（包括已恢复的）")
+            except Exception as e:
+                print(f"[ALARM VIEWER] 从系统服务管理器获取报警失败: {e}")
+                # Fallback to data manager
+                if self.data_manager:
+                    alarms = self.data_manager.alarms
+        elif self.data_manager:
+            # Fallback to data manager
+            for alarm in self.data_manager.alarms:
+                # 转换数据管理器中的报警格式
+                status = "活动"
+                if alarm.get('acknowledged', False):
+                    status = "已确认"
+                elif not alarm.get('active', True):
+                    status = "已恢复"
+                
+                converted_alarm = {
+                    'tag_name': alarm.get('tag_name', ''),
+                    'alarm_type': alarm.get('alarm_type', ''),
+                    'message': alarm.get('message', ''),
+                    'priority': alarm.get('priority', '中'),
+                    'alarm_type_name': alarm.get('alarm_type_name', alarm.get('priority', '中')),  # 兼容旧数据
+                    'status': status,
+                    'acknowledged': alarm.get('acknowledged', False),
+                    'recovered': not alarm.get('active', True),
+                    'timestamp': alarm.get('timestamp', datetime.now()),
+                    'recovery_time': None,  # 数据管理器中没有恢复时间
+                    'alarm_id': None  # 数据管理器中没有报警ID
+                }
+                alarms.append(converted_alarm)
         
         # Filter alarms based on current filters
         filtered_alarms = self._filter_alarms(alarms)
@@ -149,76 +211,80 @@ class AlarmViewerDialog(QDialog):
         for i, alarm in enumerate(filtered_alarms):
             self.alarm_table.insertRow(i)
             
+            # Alarm ID
+            alarm_id = alarm.get('alarm_id', '')
+            alarm_id_item = QTableWidgetItem(str(alarm_id) if alarm_id is not None else '')
+            self.alarm_table.setItem(i, 0, alarm_id_item)
+            
             # Tag name
             tag_item = QTableWidgetItem(alarm['tag_name'])
-            self.alarm_table.setItem(i, 0, tag_item)
+            self.alarm_table.setItem(i, 1, tag_item)
             
             # Alarm type
             type_item = QTableWidgetItem(alarm['alarm_type'])
-            self.alarm_table.setItem(i, 1, type_item)
+            self.alarm_table.setItem(i, 2, type_item)
             
             # Message
             msg_item = QTableWidgetItem(alarm['message'])
-            self.alarm_table.setItem(i, 2, msg_item)
+            self.alarm_table.setItem(i, 3, msg_item)
             
-            # Priority
-            priority_item = QTableWidgetItem(alarm['priority'])
-            # Set color based on priority
-            if alarm['priority'] == "危急":
-                priority_item.setBackground(QColor(255, 100, 100))
-            elif alarm['priority'] == "高":
-                priority_item.setBackground(QColor(255, 150, 100))
-            elif alarm['priority'] == "中":
-                priority_item.setBackground(QColor(255, 200, 100))
-            elif alarm['priority'] == "低":
-                priority_item.setBackground(QColor(200, 200, 200))
-            self.alarm_table.setItem(i, 3, priority_item)
+            # 报警类型
+            alarm_type_name = alarm.get('alarm_type_name', alarm.get('priority', '中'))  # 兼容旧数据
+            alarm_type_item = QTableWidgetItem(alarm_type_name)
+            
+            # 使用报警类型管理器设置颜色
+            alarm_type = alarm_type_manager.get_alarm_type_by_display_name(alarm_type_name)
+            if alarm_type:
+                fg_color = alarm_type_manager.get_qcolor_from_hex(alarm_type.foreground_color)
+                bg_color = alarm_type_manager.get_qcolor_from_hex(alarm_type.background_color)
+                alarm_type_item.setForeground(fg_color)
+                alarm_type_item.setBackground(bg_color)
+            
+            self.alarm_table.setItem(i, 4, alarm_type_item)
             
             # Status
-            if alarm['acknowledged']:
-                status = "已确认"
-            else:
-                status = "活动"
-            status_item = QTableWidgetItem(status)
-            if status == "活动":
+            status_item = QTableWidgetItem(alarm['status'])
+            if alarm['status'] == "活动":
                 status_item.setFont(QFont("Arial", 10, QFont.Bold))
-            self.alarm_table.setItem(i, 4, status_item)
+                status_item.setBackground(QColor(255, 220, 220))
+            elif alarm['status'] == "已恢复":
+                status_item.setForeground(QColor(100, 100, 100))
+            self.alarm_table.setItem(i, 5, status_item)
             
             # Timestamp
             timestamp_item = QTableWidgetItem(alarm['timestamp'].strftime("%Y-%m-%d %H:%M:%S"))
-            self.alarm_table.setItem(i, 5, timestamp_item)
+            self.alarm_table.setItem(i, 6, timestamp_item)
+            
+            # Recovery time if applicable
+            if alarm.get('recovered', False) and alarm.get('recovery_time'):
+                recovery_item = QTableWidgetItem(alarm['recovery_time'].strftime("%Y-%m-%d %H:%M:%S"))
+                self.alarm_table.setItem(i, 7, recovery_item)
         
         # Update status
         self.status_bar.setText(f"显示 {len(filtered_alarms)} 条报警")
     
     def _filter_alarms(self, alarms):
         """Filter alarms based on current filter settings"""
-        priority_filter = self.priority_combo.currentText()
+        alarm_type_filter = self.alarm_type_combo.currentText()
         status_filter = self.status_combo.currentText()
         tag_filter = self.tag_combo.currentText()
         time_filter = self.time_combo.currentText()
         
         filtered = []
-        now = datetime.now()
         
         for alarm in alarms:
-            # Priority filter
-            if priority_filter != "全部":
-                # Map English priority to Chinese
-                priority_map = {
-                    "LOW": "低",
-                    "MEDIUM": "中",
-                    "HIGH": "高",
-                    "CRITICAL": "危急"
-                }
-                alarm_priority_chinese = priority_map.get(alarm['priority'], alarm['priority'])
-                if alarm_priority_chinese != priority_filter:
+            # 报警类型筛选
+            if alarm_type_filter != "全部":
+                alarm_type_name = alarm.get('alarm_type_name', alarm.get('priority', '中'))  # 兼容旧数据
+                if alarm_type_name != alarm_type_filter:
                     continue
             
             # Status filter
-            if status_filter == "活动" and alarm['acknowledged']:
+            if status_filter == "活动" and (alarm['acknowledged'] or alarm.get('recovered', False)):
                 continue
             elif status_filter == "已确认" and not alarm['acknowledged']:
+                continue
+            elif status_filter == "已清除" and not alarm.get('recovered', False):
                 continue
             
             # Tag filter

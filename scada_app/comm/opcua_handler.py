@@ -100,7 +100,7 @@ class OpcUaHandler:
         """Read a tag value (compatible with PLC manager interface)"""
         return self.read_node(tag_name)
     
-    def write_tag(self, tag_name, value):
+    def write_tag(self, tag_name, value, bit_offset=None):
         """Write a tag value (compatible with PLC manager interface)"""
         return self.write_node(tag_name, value)
 

@@ -56,8 +56,8 @@ class MainWindow(QMainWindow):
         self.plc_manager.set_data_manager(self.data_manager)  # Set data manager for read-after-write
         self.config_manager = ConfigurationManager(self.data_manager, self.plc_manager)
         self.data_poller = DataPoller(self.data_manager, self.plc_manager)
-        self.system_service_manager = SystemServiceManager(self.data_manager, self.plc_manager)
-        self.project_manager = ProjectManager(self.data_manager, self.plc_manager, self.config_manager)
+        self.system_service_manager = SystemServiceManager(self.data_manager, self.plc_manager, self.config_manager)
+        self.project_manager = ProjectManager(self.data_manager, self.plc_manager, self.config_manager, self.system_service_manager)
         self.hmi_designer = HMIDesigner(self.data_manager, self)
         self.hmi_designer.config_manager = self.config_manager
         self.project_manager.set_hmi_designer(self.hmi_designer)  # Set HMI designer reference
@@ -382,6 +382,13 @@ class MainWindow(QMainWindow):
         if self.user_manager.has_permission('engineer'):
             config_menu.addAction(alarm_config_action)
         
+        # Alarm type configuration menu
+        alarm_type_config_action = QAction('报警类型配置', self)
+        alarm_type_config_action.triggered.connect(self.open_alarm_type_config)
+        # Only engineers and admins can configure alarm types
+        if self.user_manager.has_permission('engineer'):
+            config_menu.addAction(alarm_type_config_action)
+        
         logging_config_action = QAction('数据记录配置', self)
         logging_config_action.triggered.connect(self.open_logging_config)
         # Engineers, admins and operators can view/configure logging
@@ -687,14 +694,22 @@ class MainWindow(QMainWindow):
     def open_alarm_config(self):
         """Open the alarm configuration dialog"""
         try:
-            from scada_app.hmi.alarm_config import AlarmConfigDialog
-            dialog = AlarmConfigDialog(self, self.data_manager)
+            from scada_app.hmi.alarm_config_new import AlarmConfigDialog
+            dialog = AlarmConfigDialog(self, self.data_manager, self.config_manager)
             if dialog.exec_() == QDialog.Accepted:
                 # Process the alarm rules if needed
                 alarm_rules = dialog.get_alarm_rules()
                 self.status_bar.showMessage(f"报警配置已更新，包含 {len(alarm_rules)} 条规则", 2000)
         except ImportError:
-            QMessageBox.warning(self, "Missing Module", "Alarm configuration module not found.")
+            # 如果新模块不存在，回退到旧版本
+            try:
+                from scada_app.hmi.alarm_config import AlarmConfigDialog
+                dialog = AlarmConfigDialog(self, self.data_manager)
+                if dialog.exec_() == QDialog.Accepted:
+                    alarm_rules = dialog.get_alarm_rules()
+                    self.status_bar.showMessage(f"报警配置已更新，包含 {len(alarm_rules)} 条规则", 2000)
+            except ImportError:
+                QMessageBox.warning(self, "Missing Module", "Alarm configuration module not found.")
     
     def open_logging_config(self):
         """Open the data logging configuration dialog"""
@@ -723,7 +738,16 @@ class MainWindow(QMainWindow):
         except ImportError as e:
             QMessageBox.warning(self, "Missing Module", f"Data logging configuration module not found: {str(e)}")
     
-
+    def open_alarm_type_config(self):
+        """Open the alarm type configuration dialog"""
+        try:
+            from scada_app.hmi.alarm_type_config import AlarmTypeConfigDialog
+            dialog = AlarmTypeConfigDialog(self)
+            dialog.exec_()
+            self.status_bar.showMessage("报警类型配置已更新", 2000)
+        except ImportError as e:
+            QMessageBox.warning(self, "模块缺失", f"报警类型配置模块未找到: {e}")
+    
     
     def run_system(self):
         """Run the entire SCADA system - activate all components"""
@@ -1131,8 +1155,33 @@ class MainWindow(QMainWindow):
     
     def open_alarm_viewer(self):
         """Open alarm viewer dialog"""
-        dialog = AlarmViewerDialog(self, self.data_manager)
-        dialog.exec_()
+        try:
+            # 如果窗口已存在且可见，直接激活
+            if hasattr(self, '_alarm_viewer') and self._alarm_viewer is not None and self._alarm_viewer.isVisible():
+                self._alarm_viewer.raise_()
+                self._alarm_viewer.activateWindow()
+                return
+            
+            # 创建新窗口，使用self作为父窗口防止被垃圾回收
+            self._alarm_viewer = AlarmViewerDialog(self, self.data_manager, self.system_service_manager)
+            
+            # 连接窗口关闭信号
+            self._alarm_viewer.destroyed.connect(self._on_alarm_viewer_closed)
+            
+            # 显示窗口
+            self._alarm_viewer.show()
+            self._alarm_viewer.raise_()
+            self._alarm_viewer.activateWindow()
+            
+        except Exception as e:
+            print(f"打开报警监控窗口失败: {e}")
+            import traceback
+            traceback.print_exc()
+            self._alarm_viewer = None
+    
+    def _on_alarm_viewer_closed(self):
+        """Handle alarm viewer window close"""
+        self._alarm_viewer = None
     
     def open_terminal_output(self):
         """Open terminal output window"""

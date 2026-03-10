@@ -46,7 +46,7 @@ class AlarmConfigDialog(QDialog):
         self.rule_table = QTableWidget()
         self.rule_table.setColumnCount(7)
         self.rule_table.setHorizontalHeaderLabels([
-            "标签名称", "类型", "条件", "阈值", "消息", "优先级", "启用"
+            "标签名称", "类型", "条件", "阈值", "消息", "报警类型", "启用"
         ])
         header = self.rule_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Stretch)
@@ -107,7 +107,7 @@ class AlarmConfigDialog(QDialog):
         # Priority
         self.priority_combo = QComboBox()
         self.priority_combo.addItems(["低", "中", "高", "危急"])
-        config_layout.addRow("优先级:", self.priority_combo)
+        config_layout.addRow("报警类型:", self.priority_combo)
         
         # Enabled
         self.enabled_check = QCheckBox("启用")

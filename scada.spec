@@ -6,7 +6,9 @@ block_cipher = None
 a = Analysis(
     ['run_scada.py'],
     pathex=['.'],
-    binaries=[],
+    binaries=[
+        ('C:\\Users\\TUX\\AppData\\Local\\Programs\\Python\\Python314\\Lib\\site-packages\\snap7\\lib\\snap7.dll', 'snap7/lib'),
+    ],
     datas=[
         ('scada_app/resources/icons', 'scada_app/resources/icons'),
     ],
@@ -22,6 +24,13 @@ a = Analysis(
         'opcua',
         'opcua.client',
         'opcua.server',
+        'snap7',
+        'snap7.client',
+        'snap7.common',
+        'snap7.error',
+        'snap7.partner',
+        'snap7.protocol',
+        'snap7.type',
         'sqlite3',
         'datetime',
         'time',

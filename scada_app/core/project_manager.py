@@ -18,10 +18,11 @@ class ProjectManager:
     - Data logging configurations
     """
     
-    def __init__(self, data_manager, plc_manager, config_manager):
+    def __init__(self, data_manager, plc_manager, config_manager, system_service_manager=None):
         self.data_manager = data_manager
         self.plc_manager = plc_manager
         self.config_manager = config_manager
+        self.system_service_manager = system_service_manager
         self.project_file = None
         self.project_dir = None
         self.hmi_designer = None  # Reference to HMI designer for saving/loading screens
@@ -56,7 +57,7 @@ class ProjectManager:
             # Prepare project data with updated paths
             project_data = {
                 'metadata': {
-                    'version': '1.5',  # Updated version for variable groups
+                    'version': '1.6',  # Updated version for alarm types
                     'created': datetime.now().isoformat(),
                     'modified': datetime.now().isoformat()
                 },
@@ -68,7 +69,8 @@ class ProjectManager:
                 'sql_server_config': self._export_sql_server_config(),
                 'storage_type': self._export_storage_type(),
                 'poll_interval': self._export_poll_interval(),
-                'variable_groups': self._export_variable_groups()
+                'variable_groups': self._export_variable_groups(),
+                'alarm_types': self._export_alarm_types()  # 添加报警类型配置
             }
             
             # Save project data to JSON file
@@ -155,6 +157,10 @@ class ProjectManager:
             self._import_storage_type(project_data.get('storage_type'))
             self._import_poll_interval(project_data.get('poll_interval'))
             self._import_variable_groups(project_data.get('variable_groups'))
+            self._import_alarm_types(project_data.get('alarm_types', {}))  # 导入报警类型配置
+
+            # Ensure alarm rules are set to system service manager after project load
+            self._set_alarm_rules_to_system_service_manager()
 
             print(f"Project loaded from {project_file}")
             return True
@@ -566,33 +572,115 @@ class ProjectManager:
             self.hmi_designer.switch_screen(0)
     
     def _export_alarms(self):
-        """Export alarm configurations to JSON-serializable format"""
-        # For now, we'll store alarm configurations in the tags themselves
-        alarms = []
-        for name, tag in self.data_manager.tags.items():
-            if hasattr(tag, 'alarm_config'):
-                alarm_config = {
-                    'tag_name': tag.name,
-                    'high_limit': getattr(tag.alarm_config, 'high_limit', None),
-                    'low_limit': getattr(tag.alarm_config, 'low_limit', None),
-                    'deadband': getattr(tag.alarm_config, 'deadband', 0)
+        """Export alarm rules to project data"""
+        if hasattr(self.config_manager, 'alarm_rules'):
+            return self.config_manager.alarm_rules
+        return []
+    
+    def _export_alarm_types(self):
+        """Export alarm types configuration to project data"""
+        try:
+            from scada_app.core.alarm_type_manager import alarm_type_manager
+            # 导出所有报警类型配置
+            alarm_types_data = {}
+            for name, alarm_type in alarm_type_manager.alarm_types.items():
+                alarm_types_data[name] = {
+                    'display_name': alarm_type.display_name,
+                    'foreground_color': alarm_type.foreground_color,
+                    'background_color': alarm_type.background_color,
+                    'description': alarm_type.description,
+                    'enabled': alarm_type.enabled
                 }
-                alarms.append(alarm_config)
-        return alarms
+            return alarm_types_data
+        except ImportError:
+            print("Warning: Alarm type manager not available")
+            return {}
     
     def _import_alarms(self, alarms_data):
         """Import alarm configurations from JSON data"""
-        from scada_app.core.system_service_manager import AlarmConfig
+        # 导入报警规则到配置管理器
+        if not hasattr(self.config_manager, 'alarm_rules'):
+            self.config_manager.alarm_rules = []
+        
+        self.config_manager.alarm_rules.clear()
         
         for alarm_data in alarms_data:
-            tag_name = alarm_data['tag_name']
-            if tag_name in self.data_manager.tags:
-                tag = self.data_manager.tags[tag_name]
-                tag.alarm_config = AlarmConfig(
-                    high_limit=alarm_data.get('high_limit'),
-                    low_limit=alarm_data.get('low_limit'),
-                    deadband=alarm_data.get('deadband', 0)
+            # 确保数据格式正确
+            rule = {
+                'tag_name': alarm_data.get('tag_name', ''),
+                'alarm_type': alarm_data.get('alarm_type', '状态变化'),
+                'condition': alarm_data.get('condition', '假变真'),
+                'threshold': alarm_data.get('threshold', 0.0),
+                'message': alarm_data.get('message', ''),
+                'enabled': alarm_data.get('enabled', True),
+                'alarm_type_name': alarm_data.get('alarm_type_name', alarm_data.get('priority', '中')),  # 兼容旧数据
+                'bit_offset': alarm_data.get('bit_offset', None),
+                'alarm_id': alarm_data.get('alarm_id', None)  # 添加报警ID字段
+            }
+            self.config_manager.alarm_rules.append(rule)
+        
+        print(f"[PROJECT DEBUG] 导入 {len(alarms_data)} 条报警规则")
+        
+        # 同时设置到系统服务管理器
+        try:
+            from scada_app.hmi.alarm_config_new import AlarmRule
+            alarm_rules = []
+            for rule_data in alarms_data:
+                rule = AlarmRule(
+                    tag_name=rule_data.get('tag_name', ''),
+                    alarm_type=rule_data.get('alarm_type', '状态变化'),
+                    condition=rule_data.get('condition', '假变真'),
+                    threshold=rule_data.get('threshold', 0.0),
+                    message=rule_data.get('message', ''),
+                    enabled=rule_data.get('enabled', True),
+                    alarm_type_name=rule_data.get('alarm_type_name', rule_data.get('priority', '中')),  # 兼容旧数据
+                    bit_offset=rule_data.get('bit_offset', None),
+                    alarm_id=rule_data.get('alarm_id', None)  # 添加报警ID字段
                 )
+                alarm_rules.append(rule)
+            
+            # 设置到系统服务管理器
+            if hasattr(self, 'system_service_manager'):
+                self.system_service_manager.set_alarm_rules(alarm_rules)
+            elif hasattr(self.data_manager, 'system_service_manager'):
+                self.data_manager.system_service_manager.set_alarm_rules(alarm_rules)
+            
+            print(f"[PROJECT DEBUG] 设置 {len(alarm_rules)} 条报警规则到系统服务管理器")
+            
+        except Exception as e:
+            print(f"[PROJECT DEBUG] 导入报警规则到系统服务管理器失败: {e}")
+    
+    def _set_alarm_rules_to_system_service_manager(self):
+        """Set alarm rules to system service manager after project load"""
+        if not hasattr(self.config_manager, 'alarm_rules') or not self.config_manager.alarm_rules:
+            return
+        
+        try:
+            from scada_app.hmi.alarm_config_new import AlarmRule
+            alarm_rules = []
+            for rule_data in self.config_manager.alarm_rules:
+                rule = AlarmRule(
+                    tag_name=rule_data.get('tag_name', ''),
+                    alarm_type=rule_data.get('alarm_type', '状态变化'),
+                    condition=rule_data.get('condition', '假变真'),
+                    threshold=rule_data.get('threshold', 0.0),
+                    message=rule_data.get('message', ''),
+                    enabled=rule_data.get('enabled', True),
+                    alarm_type_name=rule_data.get('alarm_type_name', rule_data.get('priority', '中')),  # 兼容旧数据
+                    bit_offset=rule_data.get('bit_offset', None)
+                )
+                alarm_rules.append(rule)
+            
+            # 设置到系统服务管理器
+            if hasattr(self, 'system_service_manager'):
+                self.system_service_manager.set_alarm_rules(alarm_rules)
+                print(f"[PROJECT] 项目加载后设置 {len(alarm_rules)} 条报警规则到系统服务管理器")
+            elif hasattr(self.data_manager, 'system_service_manager'):
+                self.data_manager.system_service_manager.set_alarm_rules(alarm_rules)
+                print(f"[PROJECT] 项目加载后设置 {len(alarm_rules)} 条报警规则到系统服务管理器")
+            
+        except Exception as e:
+            print(f"[PROJECT] 项目加载后设置报警规则到系统服务管理器失败: {e}")
     
     def _export_logging_configs(self):
         """Export data logging configurations to JSON-serializable format"""
@@ -610,6 +698,46 @@ class ProjectManager:
         else:
             # Store as attribute if method doesn't exist
             self.config_manager.logging_rules = logging_configs_data
+    
+    def _import_alarm_types(self, alarm_types_data):
+        """Import alarm types configuration from project data"""
+        try:
+            from scada_app.core.alarm_type_manager import alarm_type_manager
+            
+            # 清空现有的报警类型（保留默认类型）
+            # 只删除非默认的报警类型
+            default_types = {"critical", "high", "medium", "low"}
+            keys_to_remove = []
+            for name in alarm_type_manager.alarm_types.keys():
+                if name not in default_types:
+                    keys_to_remove.append(name)
+            
+            for name in keys_to_remove:
+                del alarm_type_manager.alarm_types[name]
+            
+            # 导入项目中的报警类型配置
+            for name, type_data in alarm_types_data.items():
+                try:
+                    from scada_app.core.alarm_type_manager import AlarmType
+                    alarm_type = AlarmType(
+                        name=name,
+                        display_name=type_data.get('display_name', name),
+                        foreground_color=type_data.get('foreground_color', '#000000'),
+                        background_color=type_data.get('background_color', '#FFFFFF'),
+                        description=type_data.get('description', ''),
+                        enabled=type_data.get('enabled', True)
+                    )
+                    alarm_type_manager.alarm_types[name] = alarm_type
+                    print(f"[PROJECT DEBUG] 导入报警类型: {name}")
+                except Exception as e:
+                    print(f"[PROJECT ERROR] 导入报警类型 {name} 失败: {e}")
+            
+            print(f"[PROJECT DEBUG] 成功导入 {len(alarm_types_data)} 个报警类型")
+            
+        except ImportError:
+            print("Warning: Alarm type manager not available")
+        except Exception as e:
+            print(f"Error importing alarm types: {e}")
 
     def _export_storage_type(self):
         """Export storage type to JSON-serializable format"""

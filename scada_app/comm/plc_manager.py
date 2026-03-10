@@ -27,12 +27,12 @@ class SimulatedHandler:
             return self.data_manager.get_tag_value(tag_name)
         return self._tags.get(tag_name, 0)
     
-    def write_tag(self, tag_name, value):
+    def write_tag(self, tag_name, value, bit_offset=None):
         """Write tag value to data manager and local cache"""
         self._tags[tag_name] = value
         if self.data_manager and hasattr(self.data_manager, 'update_tag_value'):
             self.data_manager.update_tag_value(tag_name, value)
-            print(f"SimulatedHandler: Wrote {tag_name} = {value}")
+            print(f"SimulatedHandler: Wrote {tag_name} = {value}, bit_offset={bit_offset}")
         return True
     
     def disconnect(self):
@@ -145,8 +145,27 @@ class PLCConnection:
         """
         import time
         
-        # Global write rate limiter is already started during initialization
-        # No need to restart it here
+        # Ensure global write rate limiter is started
+        from .write_rate_limiter import WriteRateLimiter
+        global _global_write_limiter
+        
+        with _global_write_limiter_lock:
+            if _global_write_limiter is None:
+                _global_write_limiter = WriteRateLimiter()
+                _global_write_limiter.start()
+                print(f"Global WriteRateLimiter reinitialized (min_interval={WriteRateLimiter.MIN_INTERVAL_MS}ms)")
+        
+        # Ensure connection's write rate limiter is started
+        if hasattr(self, '_write_limiter'):
+            if not self._write_limiter.is_processing():
+                self._write_limiter.start()
+                print(f"Connection {self.name} write rate limiter restarted")
+        else:
+            # Reinitialize if missing
+            self._write_limiter = WriteRateLimiter()
+            self._write_limiter.set_write_executor(self._execute_write)
+            self._write_limiter.start()
+            print(f"Connection {self.name} write rate limiter reinitialized")
         
         # Disconnect existing handler if any (for reconnection)
         if self.handler:
