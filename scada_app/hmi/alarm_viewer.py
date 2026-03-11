@@ -158,6 +158,8 @@ class AlarmViewerDialog(QDialog):
                     # 直接使用报警状态中的alarm_id，无需复杂匹配
                     alarm_id = alarm_state.alarm_id
                     
+                    # 调试输出：检查报警状态中的alarm_id
+                    
                     alarm = {
                         'tag_name': alarm_state.tag_name,
                         'alarm_type': alarm_state.alarm_type,
@@ -173,9 +175,7 @@ class AlarmViewerDialog(QDialog):
                         'alarm_id': alarm_id
                     }
                     alarms.append(alarm)
-                print(f"[ALARM VIEWER] 从系统服务管理器获取 {len(all_alarms)} 条报警（包括已恢复的）")
             except Exception as e:
-                print(f"[ALARM VIEWER] 从系统服务管理器获取报警失败: {e}")
                 # Fallback to data manager
                 if self.data_manager:
                     alarms = self.data_manager.alarms
@@ -215,6 +215,8 @@ class AlarmViewerDialog(QDialog):
             alarm_id = alarm.get('alarm_id', '')
             alarm_id_item = QTableWidgetItem(str(alarm_id) if alarm_id is not None else '')
             self.alarm_table.setItem(i, 0, alarm_id_item)
+            
+            # 调试输出：检查表格中的报警ID
             
             # Tag name
             tag_item = QTableWidgetItem(alarm['tag_name'])

@@ -617,9 +617,9 @@ class ProjectManager:
                 'bit_offset': alarm_data.get('bit_offset', None),
                 'alarm_id': alarm_data.get('alarm_id', None)  # 添加报警ID字段
             }
+            # 调试输出：显示加载的报警ID
             self.config_manager.alarm_rules.append(rule)
         
-        print(f"[PROJECT DEBUG] 导入 {len(alarms_data)} 条报警规则")
         
         # 同时设置到系统服务管理器
         try:
@@ -637,6 +637,7 @@ class ProjectManager:
                     bit_offset=rule_data.get('bit_offset', None),
                     alarm_id=rule_data.get('alarm_id', None)  # 添加报警ID字段
                 )
+                # 调试输出：显示创建的AlarmRule对象的alarm_id
                 alarm_rules.append(rule)
             
             # 设置到系统服务管理器
@@ -644,11 +645,8 @@ class ProjectManager:
                 self.system_service_manager.set_alarm_rules(alarm_rules)
             elif hasattr(self.data_manager, 'system_service_manager'):
                 self.data_manager.system_service_manager.set_alarm_rules(alarm_rules)
-            
-            print(f"[PROJECT DEBUG] 设置 {len(alarm_rules)} 条报警规则到系统服务管理器")
-            
         except Exception as e:
-            print(f"[PROJECT DEBUG] 导入报警规则到系统服务管理器失败: {e}")
+            print(f"Error setting alarm rules: {e}")
     
     def _set_alarm_rules_to_system_service_manager(self):
         """Set alarm rules to system service manager after project load"""
@@ -667,7 +665,8 @@ class ProjectManager:
                     message=rule_data.get('message', ''),
                     enabled=rule_data.get('enabled', True),
                     alarm_type_name=rule_data.get('alarm_type_name', rule_data.get('priority', '中')),  # 兼容旧数据
-                    bit_offset=rule_data.get('bit_offset', None)
+                    bit_offset=rule_data.get('bit_offset', None),
+                    alarm_id=rule_data.get('alarm_id')  # 添加报警ID字段
                 )
                 alarm_rules.append(rule)
             
@@ -728,11 +727,9 @@ class ProjectManager:
                         enabled=type_data.get('enabled', True)
                     )
                     alarm_type_manager.alarm_types[name] = alarm_type
-                    print(f"[PROJECT DEBUG] 导入报警类型: {name}")
                 except Exception as e:
                     print(f"[PROJECT ERROR] 导入报警类型 {name} 失败: {e}")
             
-            print(f"[PROJECT DEBUG] 成功导入 {len(alarm_types_data)} 个报警类型")
             
         except ImportError:
             print("Warning: Alarm type manager not available")

@@ -298,16 +298,12 @@ class SystemServiceManager:
         # 支持中英文条件
         if (rule.condition == "HIGH" or rule.condition == "高") and value > rule.threshold:
             is_triggered = True
-            print(f"[ALARM DEBUG] 限值报警触发: {alarm_key}, 值={value} > 阈值={rule.threshold}")
         elif (rule.condition == "LOW" or rule.condition == "低") and value < rule.threshold:
             is_triggered = True
-            print(f"[ALARM DEBUG] 限值报警触发: {alarm_key}, 值={value} < 阈值={rule.threshold}")
         elif (rule.condition == "HIGH_HIGH" or rule.condition == "很高") and value > rule.threshold:
             is_triggered = True
-            print(f"[ALARM DEBUG] 限值报警触发: {alarm_key}, 值={value} > 阈值={rule.threshold}")
         elif (rule.condition == "LOW_LOW" or rule.condition == "很低") and value < rule.threshold:
             is_triggered = True
-            print(f"[ALARM DEBUG] 限值报警触发: {alarm_key}, 值={value} < 阈值={rule.threshold}")
         else:
             # 不输出未触发报警的调试信息
             pass
@@ -321,7 +317,6 @@ class SystemServiceManager:
                     # Already in alarm state, update last trigger time
                     existing_state.last_trigger_time = current_time
                     existing_state.trigger_count += 1
-                    print(f"[ALARM DEBUG] 限值报警更新: {alarm_key}, 触发次数={existing_state.trigger_count}")
                 else:
                     # New alarm or recovered alarm
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
@@ -329,7 +324,6 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.ACTIVE
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
-                        print(f"[ALARM DEBUG] 限值报警重新触发: {alarm_key}, 恢复后重新报警")
                     else:
                         # Brand new alarm
                         new_state = AlarmState(
@@ -342,8 +336,8 @@ class SystemServiceManager:
                             first_trigger_time=current_time,
                             last_trigger_time=current_time
                         )
+                        print(f"[DEBUG] Creating alarm state with alarm_id = {rule.alarm_id} for tag {rule.tag_name}")
                         self._alarm_states[alarm_key] = new_state
-                        print(f"[ALARM DEBUG] 限值报警新触发: {alarm_key}, 报警类型={rule.alarm_type_name}, 消息={rule.message}")
                     
                     # Trigger alarm notification
                     self._trigger_alarm_notification(
@@ -390,20 +384,16 @@ class SystemServiceManager:
                 'last_value': value,
                 'last_change_time': current_time
             }
-            print(f"[ALARM DEBUG] 状态变化报警初始化: {alarm_key}, 初始值={value}")
         
         last_value = self._tag_states[alarm_key]['last_value']
         
         # 检查状态变化条件
         if rule.condition == "假变真" and last_value == 0 and value == 1:
             is_triggered = True
-            print(f"[ALARM DEBUG] 状态变化报警触发: {alarm_key}, 假变真 (0→1)")
         elif rule.condition == "真变假" and last_value == 1 and value == 0:
             is_triggered = True
-            print(f"[ALARM DEBUG] 状态变化报警触发: {alarm_key}, 真变假 (1→0)")
         elif rule.condition == "变化" and last_value != value:
             is_triggered = True
-            print(f"[ALARM DEBUG] 状态变化报警触发: {alarm_key}, 值变化 ({last_value}→{value})")
         else:
             # 不输出未触发报警的调试信息
             pass
@@ -412,7 +402,6 @@ class SystemServiceManager:
         if last_value != value:
             self._tag_states[alarm_key]['last_value'] = value
             self._tag_states[alarm_key]['last_change_time'] = current_time
-            print(f"[ALARM DEBUG] 状态变化报警更新历史: {alarm_key}, 新值={value}")
         
         with self._alarm_lock:
             existing_state = self._alarm_states.get(alarm_key)
@@ -422,7 +411,6 @@ class SystemServiceManager:
                     # 已经处于报警状态，更新最后触发时间
                     existing_state.last_trigger_time = current_time
                     existing_state.trigger_count += 1
-                    print(f"[ALARM DEBUG] 状态变化报警更新: {alarm_key}, 触发次数={existing_state.trigger_count}")
                 else:
                     # 新报警或恢复后重新触发
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
@@ -430,7 +418,6 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.ACTIVE
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
-                        print(f"[ALARM DEBUG] 状态变化报警重新触发: {alarm_key}, 恢复后重新报警")
                     else:
                         # 全新报警
                         new_state = AlarmState(
@@ -444,7 +431,6 @@ class SystemServiceManager:
                             last_trigger_time=current_time
                         )
                         self._alarm_states[alarm_key] = new_state
-                        print(f"[ALARM DEBUG] 状态变化报警新触发: {alarm_key}, 报警类型={rule.alarm_type_name}, 消息={rule.message}")
                     
                     # 触发报警通知
                     self._trigger_alarm_notification(
@@ -462,7 +448,6 @@ class SystemServiceManager:
                         # 假变真报警，当值变为0时恢复
                         existing_state.status = AlarmStatus.RECOVERED
                         existing_state.recover_time = current_time
-                        print(f"[ALARM DEBUG] 状态变化报警恢复: {alarm_key}, 真变假 (1→0)")
                         
                         # 触发恢复通知
                         self._trigger_alarm_notification(
@@ -476,7 +461,6 @@ class SystemServiceManager:
                         # 真变假报警，当值变为1时恢复
                         existing_state.status = AlarmStatus.RECOVERED
                         existing_state.recover_time = current_time
-                        print(f"[ALARM DEBUG] 状态变化报警恢复: {alarm_key}, 假变真 (0→1)")
                         
                         # 触发恢复通知
                         self._trigger_alarm_notification(
@@ -498,7 +482,6 @@ class SystemServiceManager:
                 'last_time': current_time,
                 'rate': 0.0
             }
-            print(f"[ALARM DEBUG] 变化率报警初始化: {alarm_key}, 初始值={value}")
         
         last_value = self._tag_states[alarm_key]['last_value']
         last_time = self._tag_states[alarm_key]['last_time']
@@ -509,15 +492,12 @@ class SystemServiceManager:
             rate = (value - last_value) / time_diff
             self._tag_states[alarm_key]['rate'] = rate
             
-            print(f"[ALARM DEBUG] 变化率计算: {alarm_key}, 上次值={last_value}, 当前值={value}, 时间差={time_diff:.2f}s, 变化率={rate:.4f}/s")
             
             # 检查变化率条件
             if rule.condition == "正" and rate > rule.threshold:
                 is_triggered = True
-                print(f"[ALARM DEBUG] 变化率报警触发: {alarm_key}, 正变化率 {rate:.4f}/s > 阈值={rule.threshold}")
             elif rule.condition == "负" and rate < -rule.threshold:
                 is_triggered = True
-                print(f"[ALARM DEBUG] 变化率报警触发: {alarm_key}, 负变化率 {rate:.4f}/s < 阈值={-rule.threshold}")
             else:
                 # 不输出未触发报警的调试信息
                 pass
@@ -537,7 +517,6 @@ class SystemServiceManager:
                     # 已经处于报警状态，更新最后触发时间
                     existing_state.last_trigger_time = current_time
                     existing_state.trigger_count += 1
-                    print(f"[ALARM DEBUG] 变化率报警更新: {alarm_key}, 触发次数={existing_state.trigger_count}")
                 else:
                     # 新报警或恢复后重新触发
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
@@ -545,7 +524,6 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.ACTIVE
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
-                        print(f"[ALARM DEBUG] 变化率报警重新触发: {alarm_key}, 恢复后重新报警")
                     else:
                         # 全新报警
                         new_state = AlarmState(
@@ -559,7 +537,6 @@ class SystemServiceManager:
                             last_trigger_time=current_time
                         )
                         self._alarm_states[alarm_key] = new_state
-                        print(f"[ALARM DEBUG] 变化率报警新触发: {alarm_key}, 报警类型={rule.alarm_type_name}, 消息={rule.message}")
                     
                     # 触发报警通知
                     self._trigger_alarm_notification(
@@ -717,7 +694,6 @@ class SystemServiceManager:
                 
                 for rule_data in self.config_manager.alarm_rules:
                     # 调试输出：检查配置数据中的alarm_id
-                    print(f"[DEBUG] 加载报警规则: tag={rule_data.get('tag_name')}, alarm_id={rule_data.get('alarm_id')}")
                     
                     # 获取或生成报警ID
                     alarm_id = rule_data.get('alarm_id')
@@ -727,7 +703,6 @@ class SystemServiceManager:
                             next_alarm_id += 1
                         alarm_id = next_alarm_id
                         next_alarm_id += 1
-                        print(f"[DEBUG] 为规则自动生成报警ID: {alarm_id}")
                     
                     used_alarm_ids.add(alarm_id)
                     
@@ -751,6 +726,30 @@ class SystemServiceManager:
     
     def set_alarm_rules(self, rules):
         """Set alarm rules"""
+        # 为报警规则生成唯一的报警ID（如果不存在）
+        used_alarm_ids = set()
+        
+        # 首先收集所有已存在的报警ID
+        for rule in rules:
+            alarm_id = getattr(rule, 'alarm_id', None)
+            if alarm_id is not None:
+                used_alarm_ids.add(alarm_id)
+        
+        # 找到下一个可用的报警ID
+        next_alarm_id = 1
+        while next_alarm_id in used_alarm_ids:
+            next_alarm_id += 1
+        
+        # 为没有报警ID的规则生成唯一的报警ID
+        for rule in rules:
+            alarm_id = getattr(rule, 'alarm_id', None)
+            if alarm_id is None:
+                # 自动生成唯一的报警ID
+                alarm_id = next_alarm_id
+                next_alarm_id += 1
+                rule.alarm_id = alarm_id
+                print(f"[DEBUG] Generated alarm_id {alarm_id} for rule {rule.tag_name}")
+        
         self.alarm_rules = rules
         print(f"Alarm rules updated: {len(rules)} rules")
     

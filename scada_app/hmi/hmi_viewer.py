@@ -3005,12 +3005,24 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
     def __init__(self):
         super().__init__()
         self.alarm_widget = None
+        self.proxy_widget = None
         
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the alarm display in runtime mode"""
         try:
-            # 检查控件是否仍然存在，如果不存在则重新创建
-            if self.alarm_widget is None or not hasattr(self.alarm_widget, 'refresh_alarms'):
+            # 检查控件是否仍然存在
+            widget_deleted = False
+            if self.alarm_widget is not None:
+                try:
+                    # 尝试访问widget来检查是否已被删除
+                    _ = self.alarm_widget.windowTitle()
+                except RuntimeError:
+                    widget_deleted = True
+                    self.alarm_widget = None
+                    self.proxy_widget = None
+            
+            # 如果widget不存在或已被删除，则创建新的
+            if self.alarm_widget is None:
                 from scada_app.hmi.alarm_display_widget import AlarmDisplayWidget
                 
                 # 创建报警显示控件
@@ -3021,30 +3033,45 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
                     self.alarm_widget.set_data_manager(data_manager)
                 
                 # 设置系统服务管理器（从主窗口获取）
+                print(f"[DEBUG] HMIAlarmDisplayRuntime parent_widget = {parent_widget}")
                 if parent_widget:
                     main_window = parent_widget.window()
+                    print(f"[DEBUG] main_window = {main_window}")
                     if hasattr(main_window, 'system_service_manager'):
+                        print(f"[DEBUG] Found system_service_manager in main_window")
                         self.alarm_widget.set_system_service_manager(main_window.system_service_manager)
                 
-                # 应用配置
+                # 如果没有设置成功，尝试从data_manager获取
+                if not self.alarm_widget.system_service_manager and data_manager:
+                    if hasattr(data_manager, 'system_service_manager'):
+                        print(f"[DEBUG] Found system_service_manager in data_manager")
+                        self.alarm_widget.set_system_service_manager(data_manager.system_service_manager)
+                
+                # 应用配置 - 确保visible_alarm_types是集合类型
+                visible_types = self.properties.get('visible_alarm_types', ['危急', '高', '中', '低', '信息', '警告', '错误'])
+                if not isinstance(visible_types, set):
+                    visible_types = set(visible_types) if visible_types else {'危急', '高', '中', '低', '信息', '警告', '错误'}
+                
                 config = {
-                    'visible_alarm_types': self.properties.get('visible_alarm_types', ['危急', '高', '中', '低', '信息', '警告', '错误']),
+                    'visible_alarm_types': visible_types,
                     'max_display_count': self.properties.get('max_display_count', 50),
                     'auto_scroll': self.properties.get('auto_scroll', True),
                     'show_timestamp': self.properties.get('show_timestamp', True),
                     'show_alarm_type': self.properties.get('show_alarm_type', True),
-                    'show_alarm_id': self.properties.get('show_alarm_id', True)
+                    'show_alarm_id': self.properties.get('show_alarm_id', True),
+                    'show_tag_name': self.properties.get('show_tag_name', True)
                 }
                 self.alarm_widget.apply_config(config)
                 
-                # 添加到场景
-                proxy_widget = scene.addWidget(self.alarm_widget)
-                proxy_widget.setPos(self.x, self.y)
+                # 添加到场景并保存proxy_widget
+                self.proxy_widget = scene.addWidget(self.alarm_widget)
+                self.proxy_widget.setPos(self.x, self.y)
                 
                 # 设置控件几何属性
                 self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
-            else:
-                # 更新控件位置和大小
+            
+            # 更新控件位置和大小
+            if self.alarm_widget:
                 self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
                 
             # 刷新报警显示
@@ -3054,13 +3081,8 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
         except RuntimeError as e:
             # 如果对象已被删除，重置并重新创建
             if "has been deleted" in str(e):
-                print(f"[DEBUG] AlarmDisplayWidget已被删除，重新创建: {e}")
                 self.alarm_widget = None
-                # 递归调用以重新创建控件
-                self.draw_runtime(scene, data_manager, parent_widget)
-            else:
-                # 其他错误，重新抛出
-                raise e
+                self.proxy_widget = None
 
 
 class HMITextAreaRuntime(HMITextArea):

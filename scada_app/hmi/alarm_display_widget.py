@@ -24,11 +24,12 @@ class AlarmDisplayWidget(QWidget):
         
         # 配置属性
         self.visible_alarm_types = set()  # 可见的报警类型
-        self.max_display_count = 50       # 最大显示数量
+        self.max_display_count = 9999       # 最大显示数量
         self.auto_scroll = True           # 自动滚动
         self.show_timestamp = True        # 显示时间戳
         self.show_alarm_type = True       # 显示报警类型
         self.show_alarm_id = True         # 显示报警ID
+        self.show_tag_name = True        # 显示标签名称
         
         # 初始化UI
         self.init_ui()
@@ -45,6 +46,7 @@ class AlarmDisplayWidget(QWidget):
     def set_system_service_manager(self, system_service_manager):
         """设置系统服务管理器"""
         self.system_service_manager = system_service_manager
+        print(f"[DEBUG] AlarmDisplayWidget set_system_service_manager: {system_service_manager}")
         
         # 初始化可见报警类型（默认显示所有）
         self.visible_alarm_types = set(alarm_type_manager.get_alarm_type_names())
@@ -67,12 +69,6 @@ class AlarmDisplayWidget(QWidget):
         title_layout.addWidget(self.status_label)
         
         title_layout.addStretch()
-        
-        # 配置按钮
-        self.config_btn = QPushButton("配置")
-        self.config_btn.clicked.connect(self.open_config_dialog)
-        self.config_btn.setMaximumWidth(60)
-        title_layout.addWidget(self.config_btn)
         
         main_layout.addLayout(title_layout)
         
@@ -134,35 +130,53 @@ class AlarmDisplayWidget(QWidget):
         # 更新状态
         self.update_status(len(display_alarms), len(filtered_alarms))
         
-        # 自动滚动到底部
+        # 自动滚动到底部（仅在用户没有手动滚动时）
         if self.auto_scroll and display_alarms:
-            self.alarm_list.scrollToBottom()
+            # 检查滚动条位置，如果接近底部才自动滚动
+            scrollbar = self.alarm_list.verticalScrollBar()
+            if scrollbar and scrollbar.maximum() > 0:
+                # 如果滚动条在底部附近（最后10%范围内），则自动滚动
+                max_scroll = scrollbar.maximum()
+                current_scroll = scrollbar.value()
+                if current_scroll >= max_scroll * 0.9:
+                    self.alarm_list.scrollToBottom()
+                # 如果用户手动滚动到上面，不自动滚动
     
     def get_current_alarms(self):
         """获取当前报警数据"""
         alarms = []
         
+        print(f"[DEBUG] system_service_manager = {self.system_service_manager}")
+        
         # 优先从系统服务管理器获取实时报警
         if self.system_service_manager:
             try:
-                active_alarms = self.system_service_manager.get_active_alarms()
-                for alarm_state in active_alarms:
-                    # 调试输出：检查报警状态中的alarm_id
-                    print(f"[DEBUG] 报警状态: tag={alarm_state.tag_name}, alarm_id={alarm_state.alarm_id}")
-                    
-                    alarm = {
-                        'tag_name': alarm_state.tag_name,
-                        'alarm_type': alarm_state.alarm_type,
-                        'message': alarm_state.message,
-                        'alarm_type_name': alarm_state.alarm_type_name,
-                        'alarm_id': alarm_state.alarm_id,  # 添加报警ID
-                        'status': '活动',
-                        'timestamp': alarm_state.first_trigger_time,
-                        'is_active': True
-                    }
-                    alarms.append(alarm)
+                # 使用get_alarm_history来获取所有报警（包括已恢复的），这样能确保报警ID正确
+                all_alarms = self.system_service_manager.get_alarm_history(limit=50)
+                print(f"[DEBUG] get_alarm_history returned {len(all_alarms)} alarms")
+                
+                # 导入AlarmStatus枚举
+                from scada_app.core.system_service_manager import AlarmStatus
+                
+                for alarm_state in all_alarms:
+                    # 只显示活动或已确认的报警（不包括已恢复的）
+                    if alarm_state.status in [AlarmStatus.ACTIVE, AlarmStatus.ACKNOWLEDGED]:
+                        is_active = alarm_state.status == AlarmStatus.ACTIVE
+                        print(f"[DEBUG] alarm_state.alarm_id = {alarm_state.alarm_id}")
+                        alarm = {
+                            'tag_name': alarm_state.tag_name,
+                            'alarm_type': alarm_state.alarm_type,
+                            'message': alarm_state.message,
+                            'alarm_type_name': alarm_state.alarm_type_name,
+                            'alarm_id': alarm_state.alarm_id,  # 添加报警ID
+                            'status': '活动' if is_active else '已确认',
+                            'timestamp': alarm_state.first_trigger_time,
+                            'is_active': is_active
+                        }
+                        alarms.append(alarm)
             except Exception as e:
-                print(f"[ALARM DISPLAY] 从系统服务管理器获取报警失败: {e}")
+                import traceback
+                traceback.print_exc()
         
         # 如果没有实时数据，从数据管理器获取
         if not alarms and self.data_manager:
@@ -237,12 +251,12 @@ class AlarmDisplayWidget(QWidget):
         """构建显示文本"""
         parts = []
         
-        # 调试输出：检查报警数据中的alarm_id
-        print(f"[DEBUG] 构建显示文本: alarm_id={alarm.get('alarm_id')}, 显示ID={self.show_alarm_id}")
-        
         # 报警ID
-        if self.show_alarm_id and alarm.get('alarm_id'):
-            parts.append(f"ID:{alarm['alarm_id']}")
+        if self.show_alarm_id:
+            alarm_id = alarm.get('alarm_id')
+            print(f"[DEBUG] alarm_id = {alarm_id}, show_alarm_id = {self.show_alarm_id}")
+            if alarm_id is not None:
+                parts.append(f"ID:{alarm_id}")
         
         # 时间戳
         if self.show_timestamp:
@@ -255,7 +269,8 @@ class AlarmDisplayWidget(QWidget):
             parts.append(f"[{alarm_type_name}]")
         
         # 标签名称
-        parts.append(alarm['tag_name'])
+        if self.show_tag_name:
+            parts.append(alarm['tag_name'])
         
         # 报警消息
         parts.append(f"- {alarm['message']}")
@@ -295,19 +310,25 @@ class AlarmDisplayWidget(QWidget):
     
     def open_config_dialog(self):
         """打开配置对话框"""
-        dialog = AlarmDisplayConfigDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            # 应用配置
-            self.apply_config(dialog.get_config())
+        try:
+            dialog = AlarmDisplayConfigDialog(self)
+            if dialog.exec_() == QDialog.Accepted:
+                # 应用配置
+                self.apply_config(dialog.get_config())
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            QMessageBox.warning(self, "错误", f"打开配置对话框失败: {str(e)}")
     
     def apply_config(self, config):
         """应用配置"""
         self.visible_alarm_types = config.get('visible_alarm_types', set())
-        self.max_display_count = config.get('max_display_count', 50)
+        self.max_display_count = config.get('max_display_count', 9999)
         self.auto_scroll = config.get('auto_scroll', True)
         self.show_timestamp = config.get('show_timestamp', True)
         self.show_alarm_type = config.get('show_alarm_type', True)
         self.show_alarm_id = config.get('show_alarm_id', True)
+        self.show_tag_name = config.get('show_tag_name', True)
         
         # 立即刷新显示
         self.refresh_alarms()
@@ -320,7 +341,8 @@ class AlarmDisplayWidget(QWidget):
             'auto_scroll': self.auto_scroll,
             'show_timestamp': self.show_timestamp,
             'show_alarm_type': self.show_alarm_type,
-            'show_alarm_id': self.show_alarm_id
+            'show_alarm_id': self.show_alarm_id,
+            'show_tag_name': self.show_tag_name
         }
 
 
@@ -330,12 +352,18 @@ class AlarmDisplayConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.parent_widget = parent
+        self.type_checkboxes = {}  # 初始化为空字典，防止访问错误
         self.setWindowTitle("报警显示配置")
         self.setModal(True)
         self.setMinimumSize(400, 500)
         
-        self.init_ui()
-        self.load_current_config()
+        try:
+            self.init_ui()
+            self.load_current_config()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise
     
     def init_ui(self):
         """初始化界面"""
@@ -387,7 +415,7 @@ class AlarmDisplayConfigDialog(QDialog):
         display_layout = QFormLayout()
         
         self.max_count_spin = QSpinBox()
-        self.max_count_spin.setRange(1, 200)
+        self.max_count_spin.setRange(1, 9999)
         self.max_count_spin.setValue(50)
         display_layout.addRow("最大显示数量:", self.max_count_spin)
         
@@ -406,6 +434,10 @@ class AlarmDisplayConfigDialog(QDialog):
         self.show_id_check = QCheckBox("显示报警ID")
         self.show_id_check.setChecked(True)
         display_layout.addRow(self.show_id_check)
+        
+        self.show_tag_check = QCheckBox("显示标签名称")
+        self.show_tag_check.setChecked(True)
+        display_layout.addRow(self.show_tag_check)
         
         display_group.setLayout(display_layout)
         layout.addWidget(display_group)
@@ -446,6 +478,7 @@ class AlarmDisplayConfigDialog(QDialog):
             self.show_timestamp_check.setChecked(config.get('show_timestamp', True))
             self.show_type_check.setChecked(config.get('show_alarm_type', True))
             self.show_id_check.setChecked(config.get('show_alarm_id', True))
+            self.show_tag_check.setChecked(config.get('show_tag_name', True))
     
     def select_all_types(self):
         """选择所有报警类型"""
@@ -475,7 +508,8 @@ class AlarmDisplayConfigDialog(QDialog):
             'auto_scroll': self.auto_scroll_check.isChecked(),
             'show_timestamp': self.show_timestamp_check.isChecked(),
             'show_alarm_type': self.show_type_check.isChecked(),
-            'show_alarm_id': self.show_id_check.isChecked()
+            'show_alarm_id': self.show_id_check.isChecked(),
+            'show_tag_name': self.show_tag_check.isChecked()
         }
 
 

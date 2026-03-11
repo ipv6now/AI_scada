@@ -19,6 +19,11 @@ class AlarmTypeConfigDialog(QDialog):
         self.setGeometry(300, 200, 800, 600)
         
         self.alarm_type_manager = alarm_type_manager
+        
+        # 设置默认颜色
+        self.current_foreground_color = '#000000'
+        self.current_background_color = '#FFFFFF'
+        
         self.init_ui()
         self.load_alarm_types()
     
