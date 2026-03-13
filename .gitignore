@@ -39,6 +39,11 @@ env/
 *.temp
 temp/
 
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
 # OS
 .DS_Store
 Thumbs.db

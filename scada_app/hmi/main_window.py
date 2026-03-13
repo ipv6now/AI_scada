@@ -865,7 +865,7 @@ class MainWindow(QMainWindow):
 
                     from .hmi_viewer import HMIViewer
                     self.hmi_viewer = HMIViewer()
-                    self.hmi_viewer.set_managers(self.data_manager, self.plc_manager)
+                    self.hmi_viewer.set_managers(self.data_manager, self.plc_manager, self.system_service_manager)
                     self.hmi_viewer.load_hmi_project(hmi_viewer_path)
                     self.hmi_viewer.start_refresh()
 

@@ -205,6 +205,10 @@ class TrendDataManager:
 
 
 class HMIClockRuntime(HMIClock):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the clock in runtime mode with live updates"""
         import datetime
@@ -221,6 +225,7 @@ class HMIClockRuntime(HMIClock):
         
         bg.setZValue(self.z_value)
         scene.addItem(bg)
+        self._scene_items.append(bg)
         
         # Draw clock based on style
         clock_style = self.properties.get('clock_style', 'digital')
@@ -237,6 +242,7 @@ class HMIClockRuntime(HMIClock):
             clock_face.setBrush(QBrush(Qt.white))
             clock_face.setZValue(self.z_value + 1)
             scene.addItem(clock_face)
+            self._scene_items.append(clock_face)
             
             # Draw hour markers
             for i in range(12):
@@ -249,6 +255,7 @@ class HMIClockRuntime(HMIClock):
                 marker.setPen(QPen(Qt.black, 2))
                 marker.setZValue(self.z_value + 2)
                 scene.addItem(marker)
+                self._scene_items.append(marker)
             
             # Get current time
             now = datetime.datetime.now()
@@ -264,6 +271,7 @@ class HMIClockRuntime(HMIClock):
             hour_hand.setPen(QPen(Qt.black, 4))
             hour_hand.setZValue(self.z_value + 3)
             scene.addItem(hour_hand)
+            self._scene_items.append(hour_hand)
             
             # Draw minute hand
             minute_angle = math.radians(minute * 6)
@@ -273,6 +281,7 @@ class HMIClockRuntime(HMIClock):
             minute_hand.setPen(QPen(Qt.black, 2))
             minute_hand.setZValue(self.z_value + 3)
             scene.addItem(minute_hand)
+            self._scene_items.append(minute_hand)
             
             # Draw second hand
             if self.properties.get('show_seconds', True):
@@ -283,6 +292,7 @@ class HMIClockRuntime(HMIClock):
                 second_hand.setPen(QPen(Qt.red, 1))
                 second_hand.setZValue(self.z_value + 3)
                 scene.addItem(second_hand)
+                self._scene_items.append(second_hand)
             
             # Draw center dot
             center_dot = QGraphicsEllipseItem(center_x - 3, center_y - 3, 6, 6)
@@ -290,6 +300,7 @@ class HMIClockRuntime(HMIClock):
             center_dot.setPen(QPen(Qt.black))
             center_dot.setZValue(self.z_value + 4)
             scene.addItem(center_dot)
+            self._scene_items.append(center_dot)
         else:
             # Digital clock
             now = datetime.datetime.now()
@@ -346,9 +357,14 @@ class HMIClockRuntime(HMIClock):
             text_item.setPos(text_x, text_y)
             text_item.setZValue(self.z_value + 1)
             scene.addItem(text_item)
+            self._scene_items.append(text_item)
 
 
 class HMIButtonRuntime(HMIButton):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the button in runtime mode with click handling"""
         # Draw button rectangle
@@ -377,6 +393,9 @@ class HMIButtonRuntime(HMIButton):
         pen = QPen(Qt.black)
         pen.setWidth(1)
         rect_item.setPen(pen)
+        
+        scene.addItem(rect_item)
+        self._scene_items.append(rect_item)
         
         # Store references for the click handler
         rect_item.hmi_object = self
@@ -679,8 +698,6 @@ class HMIButtonRuntime(HMIButton):
             scene._momentary_release_handlers = []
         scene._momentary_release_handlers.append(scene_mouse_release_handler)
         
-        scene.addItem(rect_item)
-        
         text_item = QGraphicsTextItem(self.properties.get('text', 'Button'))
         font = QFont()
         font.setFamily(self.properties.get('font_family', 'Microsoft YaHei'))
@@ -697,9 +714,14 @@ class HMIButtonRuntime(HMIButton):
         text_item.setPos(text_x, text_y)
         
         scene.addItem(text_item)
+        self._scene_items.append(text_item)
 
 
 class HMILabelRuntime(HMILabel):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the label in runtime mode with dynamic data"""
         # If there's a bound variable, update text with its value
@@ -732,6 +754,7 @@ class HMILabelRuntime(HMILabel):
         
         # Create container for the label
         rect_item = QGraphicsRectItem(self.x, self.y, self.width, self.height)
+        rect_item.setData(0, id(self))  # 标识属于哪个控件
         
         # Check for background color first
         bg_color = self.properties.get('background_color', '')
@@ -755,8 +778,10 @@ class HMILabelRuntime(HMILabel):
             rect_item.setBrush(QBrush(Qt.NoBrush))
         
         scene.addItem(rect_item)
+        self._scene_items.append(rect_item)
         
         text_item = QGraphicsTextItem(display_text)
+        text_item.setData(0, id(self))  # 标识属于哪个控件
         font = QFont()
         font.setFamily(self.properties.get('font_family', 'Microsoft YaHei'))
         font.setPointSize(self.properties.get('font_size', 10))
@@ -772,6 +797,7 @@ class HMILabelRuntime(HMILabel):
         text_item.setPos(text_x, text_y)
         
         scene.addItem(text_item)
+        self._scene_items.append(text_item)
         
     def update_from_data_manager(self, data_manager):
         """Update the label based on data from the data manager"""
@@ -781,6 +807,10 @@ class HMILabelRuntime(HMILabel):
 
 
 class HMISwitchRuntime(HMISwitch):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the switch in runtime mode with data updates"""
         # Update state based on bound variable if available
@@ -810,6 +840,7 @@ class HMISwitchRuntime(HMISwitch):
         pen.setWidth(1)
         rect_item.setPen(pen)
         scene.addItem(rect_item)
+        self._scene_items.append(rect_item)
         
         text = self.properties.get('on_text', '开') if self.properties['state'] else self.properties.get('off_text', '关')
         text_item = QGraphicsTextItem(text)
@@ -898,6 +929,10 @@ class HMISwitchRuntime(HMISwitch):
 
 
 class HMILightRuntime(HMILight):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the light in runtime mode with data updates"""
         # Update state based on bound variable if available
@@ -959,6 +994,7 @@ class HMILightRuntime(HMILight):
             item.setPen(QPen(Qt.NoPen))
         item.setZValue(1)
         scene.addItem(item)
+        self._scene_items.append(item)
     
     def _draw_runtime_with_image(self, scene, state):
         """Draw light with image in runtime"""
@@ -976,6 +1012,7 @@ class HMILightRuntime(HMILight):
             pixmap_item.setPos(self.x + x_offset, self.y + y_offset)
             pixmap_item.setZValue(1)
             scene.addItem(pixmap_item)
+            self._scene_items.append(pixmap_item)
         else:
             # Fallback to color if image not available
             self._draw_runtime_with_color(scene, state)
@@ -987,6 +1024,10 @@ class HMILightRuntime(HMILight):
 
 
 class HMIGaugeRuntime(HMIGauge):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._scene_items = []
+    
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the gauge in runtime mode with data updates"""
         import math
@@ -1011,6 +1052,7 @@ class HMIGaugeRuntime(HMIGauge):
         bg_ellipse.setBrush(QBrush(QColor('#FFFFFF')))
         bg_ellipse.setPen(QPen(Qt.black))
         scene.addItem(bg_ellipse)
+        self._scene_items.append(bg_ellipse)
         
         # Draw scale marks and values
         min_val = self.properties.get('min_val', 0)
@@ -1038,6 +1080,7 @@ class HMIGaugeRuntime(HMIGauge):
             line = QGraphicsLineItem(x1, y1, x2, y2)
             line.setPen(QPen(Qt.black))
             scene.addItem(line)
+            self._scene_items.append(line)
             
             # Draw scale value text
             scale_value = min_val + (max_val - min_val) * i / 10
@@ -1057,9 +1100,10 @@ class HMIGaugeRuntime(HMIGauge):
             text_w = text_rect.width()
             text_h = text_rect.height()
             
-            # Center the text on its position
+            # Center is the text on its position
             scale_text.setPos(text_x - text_w / 2, text_y - text_h / 2)
             scene.addItem(scale_text)
+            self._scene_items.append(scale_text)
         
         # Draw needle
         ratio = (value - min_val) / (max_val - min_val) if max_val > min_val else 0.5
@@ -3006,6 +3050,7 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
         super().__init__()
         self.alarm_widget = None
         self.proxy_widget = None
+        self._widget_initialized = False
         
     def draw_runtime(self, scene, data_manager, parent_widget=None):
         """Draw the alarm display in runtime mode"""
@@ -3020,6 +3065,7 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
                     widget_deleted = True
                     self.alarm_widget = None
                     self.proxy_widget = None
+                    self._widget_initialized = False
             
             # 如果widget不存在或已被删除，则创建新的
             if self.alarm_widget is None:
@@ -3033,18 +3079,18 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
                     self.alarm_widget.set_data_manager(data_manager)
                 
                 # 设置系统服务管理器（从主窗口获取）
-                print(f"[DEBUG] HMIAlarmDisplayRuntime parent_widget = {parent_widget}")
-                if parent_widget:
+                # 尝试从parent_widget获取system_service_manager
+                if hasattr(parent_widget, 'system_service_manager'):
+                    self.alarm_widget.set_system_service_manager(parent_widget.system_service_manager)
+                elif parent_widget:
+                    # 尝试获取parent_widget的window
                     main_window = parent_widget.window()
-                    print(f"[DEBUG] main_window = {main_window}")
                     if hasattr(main_window, 'system_service_manager'):
-                        print(f"[DEBUG] Found system_service_manager in main_window")
                         self.alarm_widget.set_system_service_manager(main_window.system_service_manager)
                 
                 # 如果没有设置成功，尝试从data_manager获取
                 if not self.alarm_widget.system_service_manager and data_manager:
                     if hasattr(data_manager, 'system_service_manager'):
-                        print(f"[DEBUG] Found system_service_manager in data_manager")
                         self.alarm_widget.set_system_service_manager(data_manager.system_service_manager)
                 
                 # 应用配置 - 确保visible_alarm_types是集合类型
@@ -3055,28 +3101,21 @@ class HMIAlarmDisplayRuntime(HMIAlarmDisplay):
                 config = {
                     'visible_alarm_types': visible_types,
                     'max_display_count': self.properties.get('max_display_count', 50),
-                    'auto_scroll': self.properties.get('auto_scroll', True),
-                    'show_timestamp': self.properties.get('show_timestamp', True),
-                    'show_alarm_type': self.properties.get('show_alarm_type', True),
-                    'show_alarm_id': self.properties.get('show_alarm_id', True),
-                    'show_tag_name': self.properties.get('show_tag_name', True)
+                    'display_mode': self.properties.get('display_mode', 'current')
                 }
                 self.alarm_widget.apply_config(config)
                 
-                # 添加到场景并保存proxy_widget
-                self.proxy_widget = scene.addWidget(self.alarm_widget)
-                self.proxy_widget.setPos(self.x, self.y)
-                
                 # 设置控件几何属性
                 self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
+                self._widget_initialized = True
             
-            # 更新控件位置和大小
-            if self.alarm_widget:
-                self.alarm_widget.setGeometry(self.x, self.y, self.width, self.height)
-                
-            # 刷新报警显示
-            if self.alarm_widget and hasattr(self.alarm_widget, 'refresh_alarms'):
-                self.alarm_widget.refresh_alarms()
+            # 只在第一次创建时添加到场景，之后只更新控件内容
+            if self.proxy_widget is None:
+                self.proxy_widget = scene.addWidget(self.alarm_widget)
+                self.proxy_widget.setPos(self.x, self.y)
+            else:
+                # 更新位置（防止控件位置变化）
+                self.proxy_widget.setPos(self.x, self.y)
                 
         except RuntimeError as e:
             # 如果对象已被删除，重置并重新创建
@@ -3342,6 +3381,7 @@ class HMIViewer(QWidget):
         super().__init__()
         self.data_manager = None
         self.plc_manager = None
+        self.system_service_manager = None
         self.project_data = None
         self.project_path = None
         self.current_screen_index = -1
@@ -3351,6 +3391,7 @@ class HMIViewer(QWidget):
         self._persistent_widgets = {}
         
         self._pause_refresh = False
+        self._first_load = True  # 首次加载标志
         
         self.init_ui()
     
@@ -3439,10 +3480,11 @@ class HMIViewer(QWidget):
                         print(f"Error in momentary release handler: {e}")
         return super().eventFilter(obj, event)
     
-    def set_managers(self, data_manager, plc_manager):
+    def set_managers(self, data_manager, plc_manager, system_service_manager=None):
         """Set the data and PLC managers"""
         self.data_manager = data_manager
         self.plc_manager = plc_manager
+        self.system_service_manager = system_service_manager
     
     def load_hmi_project(self, hmi_file):
         """Load an HMI project file"""
@@ -3484,6 +3526,13 @@ class HMIViewer(QWidget):
         
         # Clear current objects
         self.hmi_objects = []
+        
+        # Clear scene to remove old screen's controls
+        if self.scene:
+            self.scene.clear()
+        
+        # Reset first_load flag to reinitialize scene
+        self._first_load = True
         
         # Create HMI objects from screen data
         for obj_data in screen_data.get('objects', []):
@@ -3621,7 +3670,7 @@ class HMIViewer(QWidget):
         self.save_all_trend_data()
     
     def _redraw_scene(self):
-        """重绘场景"""
+        """重绘场景（局部刷新优化）"""
         if not self.scene:
             return
         
@@ -3633,7 +3682,7 @@ class HMIViewer(QWidget):
         if hasattr(self, 'trend_manager') and self.data_manager:
             self.trend_manager.update_from_data_manager(self.data_manager)
         
-        # Save HistoryTrend states before clearing scene
+        # Save HistoryTrend states before updating
         history_trend_states = []
         for obj in self.hmi_objects:
             if hasattr(obj, 'obj_type') and obj.obj_type == 'history_trend':
@@ -3659,36 +3708,70 @@ class HMIViewer(QWidget):
                     state['_end_time_value'] = obj._end_time_edit.dateTime().toPyDateTime()
                 history_trend_states.append(state)
         
-        # Clear scene and redraw all objects with current data
-        self.scene.clear()
+        # 首次加载时完全重绘，之后局部刷新
+        if self._first_load:
+            self.scene.clear()
+            
+            # Get current screen resolution and background color
+            resolution = {'width': 1000, 'height': 600}
+            background_color = '#F0F0F0'  # Default background color
+            if self.project_data and 'hmi_screens' in self.project_data:
+                screens = self.project_data['hmi_screens']
+                if self.current_screen_index >= 0 and self.current_screen_index < len(screens):
+                    screen = screens[self.current_screen_index]
+                    resolution = screen.get('resolution', resolution)
+                    background_color = screen.get('background_color', '#F0F0F0')
+            
+            # Update scene rect to match current resolution
+            self.scene.setSceneRect(0, 0, resolution['width'], resolution['height'])
+            
+            # Draw background with screen's background color
+            bg = QGraphicsRectItem(0, 0, resolution['width'], resolution['height'])
+            bg.setBrush(QBrush(QColor(background_color)))
+            bg.setPen(QPen(Qt.NoPen))
+            self.scene.addItem(bg)
+            
+            self._first_load = False
         
-        # Get current screen resolution and background color
-        resolution = {'width': 1000, 'height': 600}
-        background_color = '#F0F0F0'  # Default background color
-        if self.project_data and 'hmi_screens' in self.project_data:
-            screens = self.project_data['hmi_screens']
-            if self.current_screen_index >= 0 and self.current_screen_index < len(screens):
-                screen = screens[self.current_screen_index]
-                resolution = screen.get('resolution', resolution)
-                background_color = screen.get('background_color', '#F0F0F0')
-        
-        # Update scene rect to match current resolution
-        self.scene.setSceneRect(0, 0, resolution['width'], resolution['height'])
-        
-        # Draw background with screen's background color
-        bg = QGraphicsRectItem(0, 0, resolution['width'], resolution['height'])
-        bg.setBrush(QBrush(QColor(background_color)))
-        bg.setPen(QPen(Qt.NoPen))
-        self.scene.addItem(bg)
-        
-        # Redraw all objects with current data
+        # 局部刷新：只更新需要更新的对象，不清空场景
         for i, obj in enumerate(self.hmi_objects):
             obj.z_value = i * 10
             # Check visibility before drawing
             if hasattr(obj, 'check_visibility'):
                 if not obj.check_visibility(self.data_manager):
                     continue
-            obj.draw_runtime(self.scene, self.data_manager, self)
+            
+            # 清除该控件之前创建的图形元素（除了报警控件）
+            if not isinstance(obj, HMIAlarmDisplayRuntime):
+                # 确保控件有 _scene_items 列表
+                if not hasattr(obj, '_scene_items'):
+                    obj._scene_items = []
+                
+                # 移除之前创建的图形元素
+                for item in obj._scene_items:
+                    if item in self.scene.items():
+                        self.scene.removeItem(item)
+                obj._scene_items.clear()
+                
+                # 记录场景中当前的项目数量
+                items_before = set(self.scene.items())
+                
+                # For other objects, redraw normally
+                obj.draw_runtime(self.scene, self.data_manager, self)
+                
+                # 收集新添加的图形元素
+                items_after = set(self.scene.items())
+                new_items = items_after - items_before
+                
+                # 将新添加的图形元素添加到控件的 _scene_items 列表
+                for item in new_items:
+                    obj._scene_items.append(item)
+            else:
+                # For alarm display widgets, just update widget
+                if obj.alarm_widget is not None:
+                    obj.alarm_widget.update()
+                else:
+                    obj.draw_runtime(self.scene, self.data_manager, self)
         
         # Restore HistoryTrend states after redraw
         for state in history_trend_states:

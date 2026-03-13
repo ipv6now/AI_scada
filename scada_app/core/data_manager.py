@@ -195,9 +195,34 @@ class DataManager:
                     acknowledged BOOLEAN,
                     priority TEXT,
                     alarm_type_name TEXT,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    alarm_id TEXT,
+                    recover_time TIMESTAMP,
+                    acknowledge_time TIMESTAMP,
+                    acknowledged_by TEXT
                 )
             ''')
+            
+            # 数据库迁移：添加新字段（如果不存在）
+            try:
+                cursor.execute("ALTER TABLE alarms ADD COLUMN alarm_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
+            
+            try:
+                cursor.execute("ALTER TABLE alarms ADD COLUMN recover_time TIMESTAMP")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
+            
+            try:
+                cursor.execute("ALTER TABLE alarms ADD COLUMN acknowledge_time TIMESTAMP")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
+            
+            try:
+                cursor.execute("ALTER TABLE alarms ADD COLUMN acknowledged_by TEXT")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
             
             conn.commit()
         finally:
@@ -311,14 +336,16 @@ class DataManager:
         finally:
             self._return_connection(conn)
         
-    def raise_alarm(self, tag_name, alarm_type, message, alarm_type_name="中"):
+    def raise_alarm(self, tag_name, alarm_type, message, alarm_type_name="中", alarm_id=None):
+        """添加报警记录（每次触发都插入新记录）"""
         alarm = {
             'tag_name': tag_name,
             'alarm_type': alarm_type,
             'message': message,
             'active': True,
             'acknowledged': False,
-            'alarm_type_name': alarm_type_name,  # 改为报警类型名称
+            'alarm_type_name': alarm_type_name,
+            'alarm_id': alarm_id,
             'timestamp': datetime.now()
         }
         
@@ -328,24 +355,109 @@ class DataManager:
         try:
             cursor = conn.cursor()
             cursor.execute('''
-                INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority, alarm_type_name, timestamp)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (tag_name, alarm_type, message, True, False, alarm_type_name, alarm_type_name, datetime.now()))
+                INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority, alarm_type_name, timestamp, alarm_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (tag_name, alarm_type, message, True, False, alarm_type_name, alarm_type_name, datetime.now(), alarm_id))
             conn.commit()
         finally:
             self._return_connection(conn)
+    
+    def acknowledge_alarm(self, alarm_id, acknowledged_by="operator", acknowledge_time=None):
+        """确认报警（插入新记录而不是更新）
         
-    def acknowledge_alarm(self, alarm_id):
-        for alarm in self.alarms:
-            if alarm.get('id') == alarm_id:
-                alarm['acknowledged'] = True
-                break
-                
+        Args:
+            alarm_id: 报警ID
+            acknowledged_by: 确认人
+            acknowledge_time: 确认时间（如果为None则使用当前时间）
+        """
+        # 注意：不修改内存中的报警状态，让报警状态管理器处理状态
+        
+        # 如果没有提供确认时间，使用当前时间
+        if acknowledge_time is None:
+            acknowledge_time = datetime.now()
+        
+        # 插入新的确认记录
         conn = self._get_connection()
         try:
             cursor = conn.cursor()
-            cursor.execute('UPDATE alarms SET acknowledged=? WHERE id=?', (True, alarm_id))
-            conn.commit()
+            # 查找对应的报警记录（查找活动记录，以获取正确的触发时间）
+            cursor.execute('''
+                SELECT tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp
+                FROM alarms
+                WHERE alarm_id = ? AND active = 1
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (alarm_id,))
+            result = cursor.fetchone()
+            
+            # 如果没有找到活动记录，查找最新的记录
+            if not result:
+                cursor.execute('''
+                    SELECT tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp
+                    FROM alarms
+                    WHERE alarm_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''', (alarm_id,))
+                result = cursor.fetchone()
+            
+            if result:
+                tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp = result
+                # 插入新的确认记录（确认时间写入recover_time字段）
+                cursor.execute('''
+                    INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledged_by)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (tag_name, alarm_type, message, False, True, priority, alarm_type_name, timestamp, alarm_id, acknowledge_time, acknowledged_by))
+                conn.commit()
+        finally:
+            self._return_connection(conn)
+    
+    def recover_alarm(self, alarm_id, recover_time=None):
+        """恢复报警（插入新记录）
+        
+        Args:
+            alarm_id: 报警ID
+            recover_time: 恢复时间（如果为None则使用当前时间）
+        """
+        # 注意：不修改内存中的报警状态，让报警状态管理器处理状态
+        
+        # 如果没有提供恢复时间，使用当前时间
+        if recover_time is None:
+            recover_time = datetime.now()
+        
+        # 插入新的恢复记录
+        conn = self._get_connection()
+        try:
+            cursor = conn.cursor()
+            # 查找对应的报警记录（查找活动记录，以获取正确的触发时间）
+            cursor.execute('''
+                SELECT tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp
+                FROM alarms
+                WHERE alarm_id = ? AND active = 1
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ''', (alarm_id,))
+            result = cursor.fetchone()
+            
+            # 如果没有找到活动记录，查找最新的记录
+            if not result:
+                cursor.execute('''
+                    SELECT tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp
+                    FROM alarms
+                    WHERE alarm_id = ?
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ''', (alarm_id,))
+                result = cursor.fetchone()
+            
+            if result:
+                tag_name, alarm_type, message, priority, alarm_type_name, alarm_id, timestamp = result
+                # 插入新的恢复记录
+                cursor.execute('''
+                    INSERT INTO alarms (tag_name, alarm_type, message, active, acknowledged, priority, alarm_type_name, timestamp, alarm_id, recover_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (tag_name, alarm_type, message, False, False, priority, alarm_type_name, timestamp, alarm_id, recover_time))
+                conn.commit()
         finally:
             self._return_connection(conn)
         

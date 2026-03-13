@@ -15,6 +15,7 @@ from enum import Enum
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Any
 from scada_app.architecture import DataType
+from scada_app.core.alarm_buffer import AlarmBuffer, AlarmBufferEntry, AlarmBufferType, alarm_buffer_manager
 
 
 class AlarmStatus(Enum):
@@ -173,6 +174,18 @@ class SystemServiceManager:
         self._last_cleanup_time = 0
         self._cleanup_interval = 3600  # Cleanup once per hour
         
+        # 报警缓冲区
+        self.alarm_buffer = alarm_buffer_manager.get_default_buffer()
+        if self.alarm_buffer is None:
+            self.alarm_buffer = alarm_buffer_manager.create_buffer(
+                'default',
+                max_size=1000,
+                overflow_percent=0.1
+            )
+        
+        # 注册报警缓冲区回调
+        self.alarm_buffer.register_callback(self._on_alarm_buffer_event)
+        
     def start_services(self):
         """Start all background services"""
         if not self.running:
@@ -322,6 +335,7 @@ class SystemServiceManager:
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
                         # Re-trigger after recovery
                         existing_state.status = AlarmStatus.ACTIVE
+                        existing_state.first_trigger_time = current_time  # 更新首次触发时间
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
                     else:
@@ -345,7 +359,8 @@ class SystemServiceManager:
                         f"{rule.alarm_type}_{rule.condition}",
                         rule.message,
                         rule.alarm_type_name,  # 改为报警类型名称
-                        is_new=True
+                        is_new=True,
+                        alarm_id=rule.alarm_id
                     )
             else:
                 # Not triggered - check if we need to mark as recovered
@@ -355,14 +370,27 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.RECOVERED
                         existing_state.recover_time = current_time
                         
+                        # 同步到报警缓冲区（会设置恢复时间）
+                        if existing_state.alarm_id:
+                            self.alarm_buffer.recover_alarm(existing_state.alarm_id)
+                        
+                        # 从报警缓冲区获取恢复时间
+                        buffer_entry = self.alarm_buffer.get_alarm_by_id(existing_state.alarm_id)
+                        buffer_recover_time = buffer_entry.recover_time if buffer_entry else None
+                        
                         # Notify recovery
                         self._trigger_alarm_notification(
                             rule.tag_name,
                             f"{rule.alarm_type}_{rule.condition}_RECOVERED",
-                            f"{rule.message} - 已恢复",
+                            rule.message,  # 保持原始消息不变
                             rule.alarm_type_name,  # 改为报警类型名称
-                            is_recovery=True
+                            is_recovery=True,
+                            alarm_id=existing_state.alarm_id
                         )
+                        
+                        # 同步到数据库（插入恢复记录，使用缓冲区的恢复时间）
+                        if existing_state.alarm_id:
+                            self.data_manager.recover_alarm(existing_state.alarm_id, buffer_recover_time)
     
     def _is_out_of_deadband(self, value: float, threshold: float, condition: str) -> bool:
         """检查是否超出死区范围"""
@@ -416,6 +444,7 @@ class SystemServiceManager:
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
                         # 恢复后重新触发
                         existing_state.status = AlarmStatus.ACTIVE
+                        existing_state.first_trigger_time = current_time  # 更新首次触发时间
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
                     else:
@@ -438,7 +467,8 @@ class SystemServiceManager:
                         f"{rule.alarm_type}_{rule.condition}",
                         rule.message,
                         rule.alarm_type_name,  # 改为报警类型名称
-                        is_new=True
+                        is_new=True,
+                        alarm_id=rule.alarm_id
                     )
             else:
                 # 未触发 - 检查是否需要标记为恢复
@@ -449,27 +479,53 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.RECOVERED
                         existing_state.recover_time = current_time
                         
-                        # 触发恢复通知
-                        self._trigger_alarm_notification(
-                            rule.tag_name,
-                            f"{rule.alarm_type}_{rule.condition}_RECOVERED",
-                            f"{rule.message} - 已恢复",
-                            rule.alarm_type_name,  # 改为报警类型名称
-                            is_recovery=True
-                        )
-                    elif (rule.condition == "TRUE_TO_FALSE" or rule.condition == "真变假") and value == 1:
-                        # 真变假报警，当值变为1时恢复
-                        existing_state.status = AlarmStatus.RECOVERED
-                        existing_state.recover_time = current_time
+                        # 同步到报警缓冲区（会设置恢复时间）
+                        if existing_state.alarm_id:
+                            self.alarm_buffer.recover_alarm(existing_state.alarm_id)
+                        
+                        # 从报警缓冲区获取恢复时间
+                        buffer_entry = self.alarm_buffer.get_alarm_by_id(existing_state.alarm_id)
+                        buffer_recover_time = buffer_entry.recover_time if buffer_entry else None
                         
                         # 触发恢复通知
                         self._trigger_alarm_notification(
                             rule.tag_name,
                             f"{rule.alarm_type}_{rule.condition}_RECOVERED",
-                            f"{rule.message} - 已恢复",
+                            rule.message,  # 保持原始消息不变
                             rule.alarm_type_name,  # 改为报警类型名称
-                            is_recovery=True
+                            is_recovery=True,
+                            alarm_id=existing_state.alarm_id
                         )
+                        
+                        # 同步到数据库（插入恢复记录，使用缓冲区的恢复时间）
+                        if existing_state.alarm_id:
+                            self.data_manager.recover_alarm(existing_state.alarm_id, buffer_recover_time)
+                    elif (rule.condition == "TRUE_TO_FALSE" or rule.condition == "真变假") and value == 1:
+                        # 真变假报警，当值变为1时恢复
+                        existing_state.status = AlarmStatus.RECOVERED
+                        existing_state.recover_time = current_time
+                        
+                        # 同步到报警缓冲区（会设置恢复时间）
+                        if existing_state.alarm_id:
+                            self.alarm_buffer.recover_alarm(existing_state.alarm_id)
+                        
+                        # 从报警缓冲区获取恢复时间
+                        buffer_entry = self.alarm_buffer.get_alarm_by_id(existing_state.alarm_id)
+                        buffer_recover_time = buffer_entry.recover_time if buffer_entry else None
+                        
+                        # 触发恢复通知
+                        self._trigger_alarm_notification(
+                            rule.tag_name,
+                            f"{rule.alarm_type}_{rule.condition}_RECOVERED",
+                            rule.message,  # 保持原始消息不变
+                            rule.alarm_type_name,  # 改为报警类型名称
+                            is_recovery=True,
+                            alarm_id=existing_state.alarm_id
+                        )
+                        
+                        # 同步到数据库（插入恢复记录，使用缓冲区的恢复时间）
+                        if existing_state.alarm_id:
+                            self.data_manager.recover_alarm(existing_state.alarm_id, buffer_recover_time)
     
     def _check_rate_alarm(self, rule, alarm_key: str, value: float, current_time: datetime):
         """检查变化率报警"""
@@ -522,6 +578,7 @@ class SystemServiceManager:
                     if existing_state and existing_state.status == AlarmStatus.RECOVERED:
                         # 恢复后重新触发
                         existing_state.status = AlarmStatus.ACTIVE
+                        existing_state.first_trigger_time = current_time  # 更新首次触发时间
                         existing_state.last_trigger_time = current_time
                         existing_state.trigger_count += 1
                     else:
@@ -544,7 +601,8 @@ class SystemServiceManager:
                         f"{rule.alarm_type}_{rule.condition}",
                         rule.message,
                         rule.alarm_type_name,  # 改为报警类型名称
-                        is_new=True
+                        is_new=True,
+                        alarm_id=rule.alarm_id
                     )
             else:
                 # 未触发 - 检查是否需要标记为恢复
@@ -554,14 +612,27 @@ class SystemServiceManager:
                         existing_state.status = AlarmStatus.RECOVERED
                         existing_state.recover_time = current_time
                         
+                        # 同步到报警缓冲区（会设置恢复时间）
+                        if existing_state.alarm_id:
+                            self.alarm_buffer.recover_alarm(existing_state.alarm_id)
+                        
+                        # 从报警缓冲区获取恢复时间
+                        buffer_entry = self.alarm_buffer.get_alarm_by_id(existing_state.alarm_id)
+                        buffer_recover_time = buffer_entry.recover_time if buffer_entry else None
+                        
                         # 通知恢复
                         self._trigger_alarm_notification(
                             rule.tag_name,
                             f"{rule.alarm_type}_{rule.condition}_RECOVERED",
-                            f"{rule.message} - 已恢复",
+                            rule.message,  # 保持原始消息不变
                             rule.alarm_type_name,  # 改为报警类型名称
-                            is_recovery=True
+                            is_recovery=True,
+                            alarm_id=existing_state.alarm_id
                         )
+                        
+                        # 同步到数据库（插入恢复记录，使用缓冲区的恢复时间）
+                        if existing_state.alarm_id:
+                            self.data_manager.recover_alarm(existing_state.alarm_id, buffer_recover_time)
     
     def _check_alarm_recovery(self, current_time: datetime):
         """检查所有报警的恢复状态"""
@@ -578,7 +649,7 @@ class SystemServiceManager:
     
     def _trigger_alarm_notification(self, tag_name: str, alarm_type: str, message: str, 
                                      alarm_type_name: str = "中", is_new: bool = False, 
-                                     is_recovery: bool = False):
+                                     is_recovery: bool = False, alarm_id: str = None):
         """触发报警通知"""
         if is_new:
             print(f"🚨 NEW ALARM [{alarm_type_name}]: {alarm_type} - {message}")
@@ -587,8 +658,51 @@ class SystemServiceManager:
         else:
             print(f"🔔 ALARM [{alarm_type_name}]: {alarm_type} - {message}")
         
-        # Add to data manager alarms
-        self.data_manager.raise_alarm(tag_name, alarm_type, message, alarm_type_name)
+        # 只有在报警触发时才添加到数据管理器
+        if not is_recovery:
+            self.data_manager.raise_alarm(tag_name, alarm_type, message, alarm_type_name, alarm_id)
+        
+        # 添加到报警缓冲区
+        if alarm_id:
+            if is_recovery:
+                # 报警恢复：更新缓冲区中的对应条目
+                existing = self.alarm_buffer.get_alarm_by_id(alarm_id)
+                if existing:
+                    self.alarm_buffer.recover_alarm(alarm_id)
+                # 注意：数据库恢复记录由报警状态管理器处理，这里不需要重复调用
+            else:
+                # 报警触发：每次都添加新条目，记录触发历史
+                # 确定报警类型
+                buffer_type = AlarmBufferType.DISCRETE
+                if alarm_type == "限值" or alarm_type == "LIMIT":
+                    buffer_type = AlarmBufferType.ANALOG
+                elif alarm_type == "状态变化":
+                    buffer_type = AlarmBufferType.DISCRETE
+                elif alarm_type == "变化率":
+                    buffer_type = AlarmBufferType.ANALOG
+                
+                # 确定优先级
+                priority = 0
+                if alarm_type_name == "危急":
+                    priority = 3
+                elif alarm_type_name == "高":
+                    priority = 2
+                elif alarm_type_name == "中":
+                    priority = 1
+                
+                # 创建缓冲区条目
+                entry = AlarmBufferEntry(
+                    alarm_id=alarm_id,
+                    tag_name=tag_name,
+                    alarm_type=alarm_type,
+                    alarm_type_name=alarm_type_name.strip(),  # 去除空格
+                    message=message,
+                    timestamp=datetime.now(),
+                    status='活动',
+                    buffer_type=buffer_type,
+                    priority=priority
+                )
+                self.alarm_buffer.add_alarm(entry)
         
         # Execute callbacks
         for callback in self.alarm_callbacks:
@@ -601,22 +715,83 @@ class SystemServiceManager:
         """确认报警
         
         Args:
-            alarm_key: 报警唯一标识
+            alarm_key: 报警唯一标识（alarm_key或alarm_id）
             acknowledged_by: 确认人
             
         Returns:
             bool: 是否成功确认
         """
         with self._alarm_lock:
+            # 先尝试通过alarm_key查找
             if alarm_key in self._alarm_states:
                 state = self._alarm_states[alarm_key]
                 if state.status == AlarmStatus.ACTIVE:
                     state.status = AlarmStatus.ACKNOWLEDGED
-                    state.acknowledge_time = datetime.now()
+                    acknowledge_time = datetime.now()
+                    state.acknowledge_time = acknowledge_time
                     state.acknowledged_by = acknowledged_by
                     print(f"✓ Alarm {alarm_key} acknowledged by {acknowledged_by}")
+                    
+                    # 同步到报警缓冲区（会设置确认时间）
+                    if state.alarm_id:
+                        self.alarm_buffer.acknowledge_alarm(state.alarm_id, acknowledged_by)
+                    
+                    # 从报警缓冲区获取确认时间
+                    buffer_entry = self.alarm_buffer.get_alarm_by_id(state.alarm_id)
+                    buffer_acknowledge_time = buffer_entry.acknowledge_time if buffer_entry else None
+                    
+                    # 同步到数据库（插入确认记录，使用缓冲区的确认时间）
+                    self.data_manager.acknowledge_alarm(state.alarm_id, acknowledged_by, buffer_acknowledge_time)
+                    
                     return True
+            else:
+                # 如果通过alarm_key找不到，尝试通过alarm_id查找
+                for key, state in self._alarm_states.items():
+                    # 转换为字符串进行比较，避免类型不匹配
+                    state_alarm_id_str = str(state.alarm_id) if state.alarm_id is not None else ''
+                    if state_alarm_id_str == str(alarm_key) and state.status == AlarmStatus.ACTIVE:
+                        state.status = AlarmStatus.ACKNOWLEDGED
+                        state.acknowledge_time = datetime.now()
+                        state.acknowledged_by = acknowledged_by
+                        print(f"✓ Alarm {state.alarm_id} acknowledged by {acknowledged_by}")
+                        
+                        # 同步到报警缓冲区
+                        if state.alarm_id:
+                            self.alarm_buffer.acknowledge_alarm(state.alarm_id, acknowledged_by)
+                        
+                        # 同步到数据库（插入确认记录）
+                        self.data_manager.acknowledge_alarm(state.alarm_id, acknowledged_by)
+                        
+                        return True
         return False
+    
+    def _on_alarm_buffer_event(self, entry: AlarmBufferEntry, action: str):
+        """报警缓冲区事件回调"""
+        if action == 'add':
+            print(f"[报警缓冲区] 添加报警: {entry.alarm_id} - {entry.message}")
+        elif action == 'update':
+            print(f"[报警缓冲区] 更新报警: {entry.alarm_id} - {entry.status}")
+        elif action == 'remove':
+            print(f"[报警缓冲区] 移除报警: {entry.alarm_id}")
+        elif action == 'overflow':
+            print(f"[报警缓冲区] 溢出删除: {entry.alarm_id}")
+    
+    def get_alarm_buffer_alarms(self, 
+                                  alarm_types: Optional[Set[str]] = None,
+                                  status: Optional[str] = None,
+                                  limit: Optional[int] = None) -> List[AlarmBufferEntry]:
+        """从报警缓冲区获取报警"""
+        return self.alarm_buffer.get_alarms(alarm_types, status, limit)
+    
+    def get_alarm_buffer_statistics(self) -> Dict:
+        """获取报警缓冲区统计信息"""
+        return self.alarm_buffer.get_statistics()
+    
+    def clear_alarm_buffer(self, 
+                           alarm_types: Optional[Set[str]] = None,
+                           status: Optional[str] = None):
+        """清除报警缓冲区"""
+        self.alarm_buffer.clear_alarms(alarm_types, status)
     
     def get_active_alarms(self) -> List[AlarmState]:
         """获取所有活动报警（未恢复）"""
@@ -627,14 +802,164 @@ class SystemServiceManager:
             ]
     
     def get_alarm_history(self, limit: int = 100) -> List[AlarmState]:
-        """获取报警历史"""
-        with self._alarm_lock:
-            sorted_alarms = sorted(
-                self._alarm_states.values(),
-                key=lambda x: x.first_trigger_time,
-                reverse=True
-            )
-            return sorted_alarms[:limit]
+        """获取报警历史（从数据库读取）"""
+        conn = self.data_manager._get_connection()
+        try:
+            cursor = conn.cursor()
+            # 从数据库读取报警记录，按插入顺序排序（使用id字段）
+            cursor.execute('''
+                SELECT id, tag_name, alarm_type, message, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledge_time, acknowledged_by, active, acknowledged
+                FROM alarms
+                ORDER BY id DESC
+                LIMIT ?
+            ''', (limit,))
+            
+            results = cursor.fetchall()
+            
+            # 转换为AlarmState对象
+            alarm_states = []
+            for result in results:
+                id, tag_name, alarm_type, message, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledge_time, acknowledged_by, active, acknowledged = result
+                
+                # 转换时间戳（数据库返回的是字符串）
+                if isinstance(timestamp, str):
+                    timestamp = datetime.fromisoformat(timestamp.replace(' ', 'T'))
+                
+                if recover_time and isinstance(recover_time, str):
+                    recover_time = datetime.fromisoformat(recover_time.replace(' ', 'T'))
+                
+                if acknowledge_time and isinstance(acknowledge_time, str):
+                    acknowledge_time = datetime.fromisoformat(acknowledge_time.replace(' ', 'T'))
+                
+                # 确定状态
+                status = AlarmStatus.ACTIVE
+                if not active:  # 根据active字段确定状态
+                    if acknowledged:
+                        status = AlarmStatus.ACKNOWLEDGED
+                    elif recover_time:
+                        status = AlarmStatus.RECOVERED
+                    else:
+                        status = AlarmStatus.RECOVERED  # 默认恢复状态
+                elif acknowledged:
+                    status = AlarmStatus.ACKNOWLEDGED
+                
+                alarm_state = AlarmState(
+                    tag_name=tag_name,
+                    alarm_type=alarm_type,
+                    status=status,
+                    alarm_type_name=alarm_type_name,
+                    message=message,
+                    alarm_id=alarm_id,
+                    first_trigger_time=timestamp,
+                    last_trigger_time=timestamp,
+                    acknowledge_time=acknowledge_time,
+                    recover_time=recover_time,
+                    acknowledged_by=acknowledged_by,
+                    trigger_count=1
+                )
+                alarm_states.append(alarm_state)
+            
+            return alarm_states
+        finally:
+            self.data_manager._return_connection(conn)
+    
+    def query_alarms(self, query_params: dict) -> List[AlarmState]:
+        """查询报警
+        
+        Args:
+            query_params: 查询参数
+                - type: 查询类型 ('time_range' 或 'alarm_id')
+                - start_time: 开始时间（按时间段查询时使用）
+                - end_time: 结束时间（按时间段查询时使用）
+                - alarm_id: 报警ID（按报警ID查询时使用）
+        
+        Returns:
+            List[AlarmState]: 查询结果
+        """
+        try:
+            conn = self.data_manager._get_connection()
+            try:
+                cursor = conn.cursor()
+                
+                query_type = query_params.get('type')
+                
+                if query_type == 'time_range':
+                    # 按时间段查询
+                    start_time = query_params.get('start_time')
+                    end_time = query_params.get('end_time')
+                    
+                    cursor.execute('''
+                        SELECT id, tag_name, alarm_type, message, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledge_time, acknowledged_by, active, acknowledged
+                        FROM alarms
+                        WHERE timestamp >= ? AND timestamp <= ?
+                        ORDER BY id DESC
+                    ''', (start_time, end_time))
+                    
+                elif query_type == 'alarm_id':
+                    # 按报警ID查询
+                    alarm_id = query_params.get('alarm_id')
+                    
+                    cursor.execute('''
+                        SELECT id, tag_name, alarm_type, message, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledge_time, acknowledged_by, active, acknowledged
+                        FROM alarms
+                        WHERE alarm_id = ?
+                        ORDER BY id DESC
+                    ''', (alarm_id,))
+                else:
+                    return []
+                
+                results = cursor.fetchall()
+                
+                # 转换为AlarmState对象
+                alarm_states = []
+                for result in results:
+                    id, tag_name, alarm_type, message, priority, alarm_type_name, timestamp, alarm_id, recover_time, acknowledge_time, acknowledged_by, active, acknowledged = result
+                    
+                    # 转换时间戳（数据库返回的是字符串）
+                    if isinstance(timestamp, str):
+                        timestamp = datetime.fromisoformat(timestamp.replace(' ', 'T'))
+                    
+                    if recover_time and isinstance(recover_time, str):
+                        recover_time = datetime.fromisoformat(recover_time.replace(' ', 'T'))
+                    
+                    if acknowledge_time and isinstance(acknowledge_time, str):
+                        acknowledge_time = datetime.fromisoformat(acknowledge_time.replace(' ', 'T'))
+                    
+                    # 确定状态
+                    status = AlarmStatus.ACTIVE
+                    if not active:  # 根据active字段确定状态
+                        if acknowledged:
+                            status = AlarmStatus.ACKNOWLEDGED
+                        elif recover_time:
+                            status = AlarmStatus.RECOVERED
+                        else:
+                            status = AlarmStatus.RECOVERED  # 默认恢复状态
+                    elif acknowledged:
+                        status = AlarmStatus.ACKNOWLEDGED
+                    
+                    alarm_state = AlarmState(
+                        tag_name=tag_name,
+                        alarm_type=alarm_type,
+                        status=status,
+                        message=message,
+                        alarm_type_name=alarm_type_name,
+                        alarm_id=alarm_id,
+                        first_trigger_time=timestamp,
+                        last_trigger_time=timestamp,
+                        acknowledge_time=acknowledge_time,
+                        recover_time=recover_time,
+                        acknowledged_by=acknowledged_by,
+                        trigger_count=1
+                    )
+                    alarm_states.append(alarm_state)
+                
+                return alarm_states
+            finally:
+                self.data_manager._return_connection(conn)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return []
     
     def _check_data_logging(self):
         """检查数据日志 - 使用批量写入"""

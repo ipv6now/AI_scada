@@ -1945,11 +1945,7 @@ class HMIAlarmDisplay(HMIObject):
             # 高级属性
             'visible_alarm_types': ['危急', '高', '中', '低', '信息', '警告', '错误'],
             'max_display_count': 50,
-            'auto_scroll': True,
-            'show_timestamp': True,
-            'show_alarm_type': True,
-            'show_alarm_id': True,
-            'show_tag_name': True
+            'display_mode': 'current'  # current/buffer/history
         }
     
     def draw(self, scene):
@@ -3869,36 +3865,15 @@ class HMIDesigner(QDialog):
         display_settings_layout.addStretch()
         alarm_display_layout.addLayout(display_settings_layout)
         
-        # Checkbox options
-        checkbox_layout = QHBoxLayout()
-        
-        self.alarm_auto_scroll_checkbox = QCheckBox("自动滚动")
-        self.alarm_auto_scroll_checkbox.setChecked(True)
-        self.alarm_auto_scroll_checkbox.stateChanged.connect(self.on_property_change)
-        checkbox_layout.addWidget(self.alarm_auto_scroll_checkbox)
-        
-        self.alarm_show_timestamp_checkbox = QCheckBox("显示时间戳")
-        self.alarm_show_timestamp_checkbox.setChecked(True)
-        self.alarm_show_timestamp_checkbox.stateChanged.connect(self.on_property_change)
-        checkbox_layout.addWidget(self.alarm_show_timestamp_checkbox)
-        
-        self.alarm_show_type_checkbox = QCheckBox("显示报警类型")
-        self.alarm_show_type_checkbox.setChecked(True)
-        self.alarm_show_type_checkbox.stateChanged.connect(self.on_property_change)
-        checkbox_layout.addWidget(self.alarm_show_type_checkbox)
-        
-        self.alarm_show_id_checkbox = QCheckBox("显示报警ID")
-        self.alarm_show_id_checkbox.setChecked(True)
-        self.alarm_show_id_checkbox.stateChanged.connect(self.on_property_change)
-        checkbox_layout.addWidget(self.alarm_show_id_checkbox)
-        
-        self.alarm_show_tag_checkbox = QCheckBox("显示标签名称")
-        self.alarm_show_tag_checkbox.setChecked(True)
-        self.alarm_show_tag_checkbox.stateChanged.connect(self.on_property_change)
-        checkbox_layout.addWidget(self.alarm_show_tag_checkbox)
-        
-        checkbox_layout.addStretch()
-        alarm_display_layout.addLayout(checkbox_layout)
+        # 显示模式下拉框
+        mode_layout = QHBoxLayout()
+        mode_layout.addWidget(QLabel("显示模式:"))
+        self.alarm_display_mode_combo = QComboBox()
+        self.alarm_display_mode_combo.addItems(["当前报警状态", "报警缓冲区", "报警记录"])
+        self.alarm_display_mode_combo.currentTextChanged.connect(self.on_property_change)
+        mode_layout.addWidget(self.alarm_display_mode_combo)
+        mode_layout.addStretch()
+        alarm_display_layout.addLayout(mode_layout)
         
         # Visible alarm types
         type_layout = QHBoxLayout()
@@ -5673,29 +5648,18 @@ class HMIDesigner(QDialog):
         
         props = self.selected_object.properties
         
-        # Block signals to prevent triggering updates
-        self.alarm_auto_scroll_checkbox.blockSignals(True)
-        self.alarm_show_timestamp_checkbox.blockSignals(True)
-        self.alarm_show_type_checkbox.blockSignals(True)
-        self.alarm_show_id_checkbox.blockSignals(True)
-        self.alarm_show_tag_checkbox.blockSignals(True)
-        
-        # Update checkbox values from properties
-        self.alarm_auto_scroll_checkbox.setChecked(props.get('auto_scroll', True))
-        self.alarm_show_timestamp_checkbox.setChecked(props.get('show_timestamp', True))
-        self.alarm_show_type_checkbox.setChecked(props.get('show_alarm_type', True))
-        self.alarm_show_id_checkbox.setChecked(props.get('show_alarm_id', True))
-        self.alarm_show_tag_checkbox.setChecked(props.get('show_tag_name', True))
+        # Update display mode
+        display_mode = props.get('display_mode', 'current')
+        mode_map = {
+            'current': '当前报警状态',
+            'buffer': '报警缓冲区',
+            'history': '报警记录'
+        }
+        mode_text = mode_map.get(display_mode, '当前报警状态')
+        self.alarm_display_mode_combo.setCurrentText(mode_text)
         
         # Update max count
         self.alarm_max_count_spin.setValue(props.get('max_display_count', 50))
-        
-        # Unblock signals
-        self.alarm_auto_scroll_checkbox.blockSignals(False)
-        self.alarm_show_timestamp_checkbox.blockSignals(False)
-        self.alarm_show_type_checkbox.blockSignals(False)
-        self.alarm_show_id_checkbox.blockSignals(False)
-        self.alarm_show_tag_checkbox.blockSignals(False)
 
     def update_text_list_properties(self):
         """Update text list properties panel"""
@@ -6500,11 +6464,15 @@ class HMIDesigner(QDialog):
                 # Handle alarm display properties
                 if obj.obj_type == 'alarm_display':
                     obj.properties['max_display_count'] = self.alarm_max_count_spin.value()
-                    obj.properties['auto_scroll'] = self.alarm_auto_scroll_checkbox.isChecked()
-                    obj.properties['show_timestamp'] = self.alarm_show_timestamp_checkbox.isChecked()
-                    obj.properties['show_alarm_type'] = self.alarm_show_type_checkbox.isChecked()
-                    obj.properties['show_alarm_id'] = self.alarm_show_id_checkbox.isChecked() if hasattr(self, 'alarm_show_id_checkbox') else True
-                    obj.properties['show_tag_name'] = self.alarm_show_tag_checkbox.isChecked() if hasattr(self, 'alarm_show_tag_checkbox') else True
+                    
+                    # Update display mode
+                    mode_text = self.alarm_display_mode_combo.currentText()
+                    mode_map = {
+                        '当前报警状态': 'current',
+                        '报警缓冲区': 'buffer',
+                        '报警记录': 'history'
+                    }
+                    obj.properties['display_mode'] = mode_map.get(mode_text, 'current')
                     
                     # Get visible alarm types from checkboxes
                     visible_types = []

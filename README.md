@@ -2,6 +2,10 @@
 
 A comprehensive Supervisory Control and Data Acquisition (SCADA) system developed in Python with PyQt for industrial automation applications.
 
+## Version
+
+**Current Version: 1.7**
+
 ## Features
 
 - **PLC Connectivity**: Support for multiple PLC protocols (Modbus TCP/RTU, OPC UA, Simulated PLC)
@@ -74,6 +78,24 @@ The application is designed to be extensible:
 - Extend HMI object types
 - Integrate with different databases
 - Add new visualization components
+
+## Version History
+
+### Version 1.7
+- Fixed screen switching issues with control crossover display
+- Resolved "QGraphicsScene::addItem: item has already been added to this scene" warnings
+- Added query mode for alarm history to prevent automatic refresh overwriting query results
+- Added "Exit Query" button to manually exit query mode
+- Fixed "alarm state object has no attribute get" error during alarm queries
+- Added exception handling for alarm query operations to prevent crashes
+- Improved graphics item tracking for all runtime widgets (Clock, Button, Switch, Light, Gauge)
+- Fixed duplicate graphics item addition in button widgets
+
+### Version 1.6
+- Added alarm type management with configurable colors
+- Implemented alarm buffer for storing alarm history
+- Added alarm display widget with current/buffer/history modes
+- Added alarm query functionality with time range and ID-based filtering
 
 ## Testing
 

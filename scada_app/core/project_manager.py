@@ -57,7 +57,7 @@ class ProjectManager:
             # Prepare project data with updated paths
             project_data = {
                 'metadata': {
-                    'version': '1.6',  # Updated version for alarm types
+                    'version': '1.7',  # Updated version for query mode and bug fixes
                     'created': datetime.now().isoformat(),
                     'modified': datetime.now().isoformat()
                 },
